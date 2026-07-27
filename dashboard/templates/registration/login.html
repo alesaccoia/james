@@ -1,0 +1,25 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Accedi{% endblock %}
+{% block content %}
+<div class="flex justify-center items-center py-20">
+  <div class="card w-full max-w-sm bg-base-100 shadow-xl">
+    <div class="card-body">
+      <h2 class="card-title">Accedi</h2>
+      {% if form.errors %}
+        <div class="alert alert-error text-sm">Username o password non validi.</div>
+      {% endif %}
+      <form method="post">
+        {% csrf_token %}
+        <fieldset class="fieldset">
+          <label class="label">Username</label>
+          <input type="text" name="username" class="input input-bordered w-full" autofocus required>
+          <label class="label">Password</label>
+          <input type="password" name="password" class="input input-bordered w-full" required>
+        </fieldset>
+        <input type="hidden" name="next" value="{{ next }}">
+        <button class="btn btn-primary w-full mt-4" type="submit">Entra</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,218 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Marketing{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Marketing</h1>
+    <p class="text-sm opacity-60">Performance pubblicitarie — tutti i canali insieme</p>
+  </div>
+  <div class="grow"></div>
+  <div class="badge badge-lg badge-outline" id="pill-range">periodo: —</div>
+  <button class="btn btn-sm" id="btn-reload">Ricarica</button>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Nessun dato ancora. Serve almeno una sync Airbyte completata e poi <code>manage.py import_airbyte</code>.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="tabs tabs-boxed" id="period-tabs"></div>
+    <label class="flex items-center gap-2 text-sm">canale
+      <select id="f-channel" class="select select-bordered select-sm"><option value="">tutti</option></select>
+    </label>
+  </div>
+
+  <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="kpis"></div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Spesa e click nel tempo</h2>
+      <p class="text-sm opacity-60">Somma giornaliera per canale, nel periodo selezionato.</p>
+      <div class="h-96 relative"><canvas id="chart-trend"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Campagne</h2>
+      <p class="text-sm opacity-60">Per il periodo selezionato, ordinate per spesa.</p>
+      <input type="text" id="f-text" placeholder="cerca campagna…" class="input input-bordered input-sm w-full max-w-xs mb-3">
+      <div class="overflow-x-auto max-h-[480px]">
+        <table class="table table-zebra table-pin-rows" id="campaign-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-xs opacity-50 mt-8">Fonte: database (Airbyte → Postgres) · righe: <span id="src-rows">0</span></p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>const MKT_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = MKT_CFG.data_url;
+const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171", "#2dd4bf", "#fb923c"];
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 2 });
+const fmtEUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const fmtEURc = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+
+let ROWS = [];
+let CHANNELS = [];
+let period = 30;
+let chart = null;
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function filteredRows() {
+  const ch = $("f-channel").value;
+  const since = period === "all" ? null : daysAgo(period);
+  return ROWS.filter(r => (!since || r.date >= since) && (!ch || r.channel === ch));
+}
+
+function colorOf(name) {
+  const i = CHANNELS.indexOf(name);
+  return PALETTE[i >= 0 ? i % PALETTE.length : 0];
+}
+
+function renderPeriodTabs() {
+  const tabs = [[7, "7 giorni"], [30, "30 giorni"], [90, "90 giorni"], ["all", "Tutto"]];
+  $("period-tabs").innerHTML = tabs.map(([v, l]) =>
+    `<a class="tab ${v === period ? "tab-active" : ""}" data-v="${v}">${l}</a>`).join("");
+  $("period-tabs").querySelectorAll("a").forEach(b =>
+    b.onclick = () => { period = b.dataset.v === "all" ? "all" : Number(b.dataset.v); renderAll(); });
+}
+
+function renderKPIs() {
+  const rows = filteredRows();
+  const spend = rows.reduce((s, r) => s + r.spend, 0);
+  const impressions = rows.reduce((s, r) => s + r.impressions, 0);
+  const clicks = rows.reduce((s, r) => s + r.clicks, 0);
+  const ctr = impressions ? (clicks / impressions * 100) : null;
+  const cpc = clicks ? (spend / clicks) : null;
+
+  const defs = [
+    { name: "Spesa", val: fmtEUR.format(spend) },
+    { name: "Impression", val: fmt(impressions) },
+    { name: "Click", val: fmt(clicks) },
+    { name: "CTR medio", val: ctr == null ? "—" : fmt(ctr) + "%" },
+    { name: "CPC medio", val: cpc == null ? "—" : fmtEURc.format(cpc) },
+  ];
+  $("kpis").innerHTML = defs.map(d => `
+    <div class="stat">
+      <div class="stat-title">${d.name}</div>
+      <div class="stat-value text-2xl">${d.val}</div>
+    </div>`).join("");
+}
+
+function renderChart() {
+  if (chart) chart.destroy();
+  const rows = filteredRows();
+  const dates = [...new Set(rows.map(r => r.date))].sort();
+  const byChannel = {};
+  rows.forEach(r => {
+    byChannel[r.channel] = byChannel[r.channel] || {};
+    byChannel[r.channel][r.date] = (byChannel[r.channel][r.date] || 0) + r.spend;
+  });
+  const datasets = Object.keys(byChannel).map(c => ({
+    label: c,
+    data: dates.map(d => byChannel[c][d] || 0),
+    borderColor: colorOf(c), backgroundColor: colorOf(c),
+    borderWidth: 2, pointRadius: 2, tension: .25, fill: false,
+  }));
+
+  chart = new Chart($("chart-trend"), {
+    type: "line",
+    data: { labels: dates, datasets },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { color: "#e5e7eb" } },
+        y: { grid: { color: "#e5e7eb" }, ticks: { callback: v => fmtEUR.format(v) } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtEUR.format(ctx.parsed.y)}` } },
+      },
+    },
+  });
+}
+
+function renderCampaignTable() {
+  const ft = $("f-text").value.toLowerCase();
+  const rows = filteredRows().filter(r => !ft || r.campaign.toLowerCase().includes(ft));
+  const byCampaign = {};
+  rows.forEach(r => {
+    const key = r.channel + "|" + r.campaign;
+    byCampaign[key] = byCampaign[key] || { channel: r.channel, campaign: r.campaign, spend: 0, impressions: 0, clicks: 0 };
+    byCampaign[key].spend += r.spend;
+    byCampaign[key].impressions += r.impressions;
+    byCampaign[key].clicks += r.clicks;
+  });
+  const list = Object.values(byCampaign).sort((a, b) => b.spend - a.spend);
+  const body = list.map(c => {
+    const ctr = c.impressions ? (c.clicks / c.impressions * 100) : null;
+    const cpc = c.clicks ? (c.spend / c.clicks) : null;
+    return `<tr>
+      <td><span class="badge badge-ghost">${c.channel}</span></td>
+      <td>${c.campaign}</td>
+      <td class="text-right">${fmtEUR.format(c.spend)}</td>
+      <td class="text-right">${fmt(c.impressions)}</td>
+      <td class="text-right">${fmt(c.clicks)}</td>
+      <td class="text-right">${ctr == null ? "—" : fmt(ctr) + "%"}</td>
+      <td class="text-right">${cpc == null ? "—" : fmtEURc.format(cpc)}</td>
+    </tr>`;
+  }).join("");
+  $("campaign-table").innerHTML =
+    `<thead><tr><th>canale</th><th>campagna</th><th class="text-right">spesa</th><th class="text-right">impression</th><th class="text-right">click</th><th class="text-right">ctr</th><th class="text-right">cpc</th></tr></thead>
+     <tbody>${body || '<tr><td colspan="7" class="opacity-50">nessuna campagna nel periodo</td></tr>'}</tbody>`;
+}
+
+function renderAll() {
+  renderPeriodTabs();
+  $("f-channel").innerHTML = `<option value="">tutti</option>` +
+    CHANNELS.map(c => `<option>${c}</option>`).join("");
+  $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
+  renderKPIs();
+  renderChart();
+  renderCampaignTable();
+}
+
+$("f-channel").addEventListener("change", renderAll);
+$("f-text").addEventListener("input", renderCampaignTable);
+$("btn-reload").onclick = load;
+
+async function load() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const json = await r.json();
+    ROWS = json.rows || [];
+    CHANNELS = [...new Set(ROWS.map(r => r.channel))];
+    $("src-rows").textContent = ROWS.length;
+    if (!ROWS.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    renderAll();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}
