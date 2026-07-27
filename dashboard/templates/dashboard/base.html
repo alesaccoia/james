@@ -10,8 +10,13 @@
 </head>
 <body class="min-h-screen bg-base-200">
 <div class="navbar bg-base-100 shadow-sm px-4">
-  <div class="flex-1">
+  <div class="flex-1 items-center gap-1">
     <a href="{% url 'dashboard:dashboard' %}" class="btn btn-ghost text-xl">James</a>
+    {% if user.is_authenticated %}
+      <a href="{% url 'dashboard:dashboard' %}" class="btn btn-sm btn-ghost {% block nav_meta %}{% endblock %}">Meta Ads</a>
+      <a href="{% url 'dashboard:ga4' %}" class="btn btn-sm btn-ghost {% block nav_ga4 %}{% endblock %}">Google Analytics</a>
+      <a href="{% url 'dashboard:compare' %}" class="btn btn-sm btn-ghost {% block nav_compare %}{% endblock %}">Confronto</a>
+    {% endif %}
   </div>
   <div class="flex-none gap-2">
     {% if user.is_authenticated %}

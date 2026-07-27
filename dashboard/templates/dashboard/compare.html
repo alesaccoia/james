@@ -1,0 +1,237 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Confronto{% endblock %}
+{% block nav_compare %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Confronto tra fonti</h1>
+    <p class="text-sm opacity-60">Metti insieme metriche di canali diversi sullo stesso grafico</p>
+  </div>
+  <div class="grow"></div>
+  <div class="badge badge-lg badge-outline" id="pill-range">periodo: —</div>
+  <button class="btn btn-sm" id="btn-reload">Ricarica</button>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Nessun dato ancora. Servono sync Airbyte completate e <code>manage.py import_airbyte</code>.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+    <div class="join">
+      <button class="btn btn-sm join-item" id="btn-mode-abs">Valori assoluti</button>
+      <button class="btn btn-sm join-item" id="btn-mode-norm">Normalizzato (indice 100)</button>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+    <div class="card bg-base-100 shadow lg:col-span-1 h-fit">
+      <div class="card-body">
+        <h2 class="card-title text-base">Metriche</h2>
+        <p class="text-xs opacity-60 mb-2">Seleziona cosa mettere sul grafico — puoi mischiare fonti diverse.</p>
+        <div id="metric-picker" class="flex flex-col gap-1"></div>
+      </div>
+    </div>
+    <div class="card bg-base-100 shadow lg:col-span-3">
+      <div class="card-body">
+        <h2 class="card-title">Andamento nel tempo</h2>
+        <p class="text-sm opacity-60" id="chart-hint">Somma giornaliera per metrica selezionata.</p>
+        <div class="h-96 relative"><canvas id="chart-compare"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mt-6">
+    <div class="card-body">
+      <h2 class="card-title">Totali del periodo</h2>
+      <div class="overflow-x-auto">
+        <table class="table table-zebra" id="totals-table"></table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>const CMP_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = CMP_CFG.data_url;
+const METRIC_DEFS = CMP_CFG.metrics; // {key: {label, source, unit}}
+const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171", "#2dd4bf", "#fb923c", "#c084fc", "#94a3b8"];
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 2 });
+const fmtEUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+const fmtByUnit = (v, unit) => unit === "eur" ? fmtEUR.format(v) : fmt(v);
+
+const METRIC_KEYS = Object.keys(METRIC_DEFS);
+const colorOf = (key) => PALETTE[METRIC_KEYS.indexOf(key) % PALETTE.length];
+
+let SERIES = {}; // key -> [{date, value}]
+let selected = new Set(METRIC_KEYS.slice(0, 3));
+let period = 30;
+let mode = "abs"; // abs | norm
+let chart = null;
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function filteredSeries(key) {
+  const since = period === "all" ? null : daysAgo(period);
+  return (SERIES[key] || []).filter(p => !since || p.date >= since);
+}
+
+function renderPeriodTabs() {
+  const tabs = [[7, "7 giorni"], [30, "30 giorni"], [90, "90 giorni"], ["all", "Tutto"]];
+  $("period-tabs").innerHTML = tabs.map(([v, l]) =>
+    `<a class="tab ${v === period ? "tab-active" : ""}" data-v="${v}">${l}</a>`).join("");
+  $("period-tabs").querySelectorAll("a").forEach(b =>
+    b.onclick = () => { period = b.dataset.v === "all" ? "all" : Number(b.dataset.v); renderAll(); });
+}
+
+function renderModeButtons() {
+  $("btn-mode-abs").classList.toggle("btn-active", mode === "abs");
+  $("btn-mode-norm").classList.toggle("btn-active", mode === "norm");
+}
+$("btn-mode-abs").onclick = () => { mode = "abs"; renderAll(); };
+$("btn-mode-norm").onclick = () => { mode = "norm"; renderAll(); };
+
+function renderPicker() {
+  const bySource = {};
+  METRIC_KEYS.forEach(k => {
+    const def = METRIC_DEFS[k];
+    bySource[def.source] = bySource[def.source] || [];
+    bySource[def.source].push(k);
+  });
+  let html = "";
+  for (const [source, keys] of Object.entries(bySource)) {
+    html += `<div class="text-xs font-semibold opacity-60 mt-2 first:mt-0">${source}</div>`;
+    keys.forEach(k => {
+      const def = METRIC_DEFS[k];
+      html += `
+        <label class="label cursor-pointer justify-start gap-2 py-1">
+          <input type="checkbox" class="checkbox checkbox-sm" data-k="${k}" ${selected.has(k) ? "checked" : ""}
+                 style="accent-color:${colorOf(k)}">
+          <span class="label-text text-sm">${def.label}</span>
+        </label>`;
+    });
+  }
+  $("metric-picker").innerHTML = html;
+  $("metric-picker").querySelectorAll("input").forEach(cb => {
+    cb.onchange = () => {
+      if (cb.checked) selected.add(cb.dataset.k); else selected.delete(cb.dataset.k);
+      renderChart(); renderTotals();
+    };
+  });
+}
+
+function renderChart() {
+  if (chart) chart.destroy();
+  const keys = [...selected];
+  if (!keys.length) return;
+  const allDates = new Set();
+  keys.forEach(k => filteredSeries(k).forEach(p => allDates.add(p.date)));
+  const dates = [...allDates].sort();
+
+  const datasets = keys.map(k => {
+    const byDate = Object.fromEntries(filteredSeries(k).map(p => [p.date, p.value]));
+    let values = dates.map(d => byDate[d] ?? null);
+    if (mode === "norm") {
+      const max = Math.max(...values.filter(v => v != null), 0) || 1;
+      values = values.map(v => v == null ? null : (v / max) * 100);
+    }
+    return {
+      label: METRIC_DEFS[k].label,
+      data: values,
+      borderColor: colorOf(k), backgroundColor: colorOf(k),
+      borderWidth: 2, pointRadius: 2, tension: .25, spanGaps: true,
+    };
+  });
+
+  $("chart-hint").textContent = mode === "norm"
+    ? "Ogni metrica è riscalata sul proprio massimo (=100) per confrontare l'andamento, non il valore assoluto."
+    : "Somma giornaliera, valori nella loro unità originale (attenzione a mischiare € e conteggi).";
+
+  chart = new Chart($("chart-compare"), {
+    type: "line",
+    data: { labels: dates, datasets },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { color: "#e5e7eb" } },
+        y: { grid: { color: "#e5e7eb" }, ticks: { callback: v => mode === "norm" ? v + "%" : fmtN.format(v) } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
+        tooltip: { callbacks: { label: ctx => {
+          const def = METRIC_DEFS[METRIC_KEYS.find(k => METRIC_DEFS[k].label === ctx.dataset.label)] || {};
+          const val = mode === "norm" ? fmtN.format(ctx.parsed.y) + "%" : fmtByUnit(ctx.parsed.y, def.unit);
+          return ` ${ctx.dataset.label}: ${val}`;
+        } } },
+      },
+    },
+  });
+}
+
+function renderTotals() {
+  const keys = [...selected];
+  const rows = keys.map(k => {
+    const vals = filteredSeries(k).map(p => p.value);
+    const total = vals.reduce((s, v) => s + v, 0);
+    const avg = vals.length ? total / vals.length : null;
+    const def = METRIC_DEFS[k];
+    return `<tr>
+      <td><span class="inline-block w-2.5 h-2.5 rounded-full mr-2" style="background:${colorOf(k)}"></span>${def.label}</td>
+      <td class="opacity-60">${def.source}</td>
+      <td class="text-right">${fmtByUnit(total, def.unit)}</td>
+      <td class="text-right">${avg == null ? "—" : fmtByUnit(avg, def.unit)}/giorno</td>
+    </tr>`;
+  }).join("");
+  $("totals-table").innerHTML =
+    `<thead><tr><th>metrica</th><th>fonte</th><th class="text-right">totale periodo</th><th class="text-right">media</th></tr></thead>
+     <tbody>${rows || '<tr><td colspan="4" class="opacity-50">nessuna metrica selezionata</td></tr>'}</tbody>`;
+}
+
+function renderAll() {
+  renderPeriodTabs();
+  renderModeButtons();
+  $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
+  renderChart();
+  renderTotals();
+}
+
+$("btn-reload").onclick = load;
+
+async function load() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const json = await r.json();
+    SERIES = Object.fromEntries(Object.entries(json.metrics).map(([k, v]) => [k, v.series]));
+    const hasAny = Object.values(SERIES).some(s => s.length);
+    if (!hasAny) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    renderPicker();
+    renderAll();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}
