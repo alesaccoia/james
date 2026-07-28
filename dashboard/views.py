@@ -178,32 +178,10 @@ def data_ga4(request):
             'engagementRate': _num(d.get('engagementRate')) * 100,
         })
 
-    age = []
-    for d in _stream_rows('ga_demographic_age_report'):
-        date = _ga_date(d.get('date'))
-        if not date:
-            continue
-        age.append({
-            'date': date,
-            'bracket': d.get('userAgeBracket') or '(sconosciuta)',
-            'totalUsers': _num(d.get('totalUsers')),
-            'newUsers': _num(d.get('newUsers')),
-            'engagementRate': _num(d.get('engagementRate')) * 100,
-        })
-
-    gender = []
-    for d in _stream_rows('ga_demographic_gender_report'):
-        date = _ga_date(d.get('date'))
-        if not date:
-            continue
-        gender.append({
-            'date': date,
-            'gender': d.get('userGender') or '(sconosciuto)',
-            'totalUsers': _num(d.get('totalUsers')),
-            'newUsers': _num(d.get('newUsers')),
-            'engagementRate': _num(d.get('engagementRate')) * 100,
-        })
-
+    # Note: GA4's age/gender demographic reports require Google Signals to be
+    # enabled on the property — without it the API returns nothing for them
+    # (and Airbyte burns through rate limit retries for no data), so those
+    # two streams are deliberately not synced. Country/city still work fine.
     geo = []
     for d in _stream_rows('ga_demographic_country_report'):
         date = _ga_date(d.get('date'))
@@ -232,8 +210,7 @@ def data_ga4(request):
 
     return JsonResponse({
         'overview': overview, 'channels': channels, 'campaigns': campaigns,
-        'events': events, 'pages': pages, 'sources': sources,
-        'age': age, 'gender': gender, 'geo': geo,
+        'events': events, 'pages': pages, 'sources': sources, 'geo': geo,
     })
 
 

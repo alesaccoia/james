@@ -94,23 +94,7 @@
   </div>
 
   <div class="divider mt-8">Dati demografici</div>
-
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-    <div class="card bg-base-100 shadow">
-      <div class="card-body">
-        <h2 class="card-title">Età</h2>
-        <p class="text-sm opacity-60">Utenti per fascia d'età, periodo selezionato.</p>
-        <div class="h-72 relative"><canvas id="chart-age"></canvas></div>
-      </div>
-    </div>
-    <div class="card bg-base-100 shadow">
-      <div class="card-body">
-        <h2 class="card-title">Genere</h2>
-        <p class="text-sm opacity-60">Utenti per genere, periodo selezionato.</p>
-        <div class="h-72 relative"><canvas id="chart-gender"></canvas></div>
-      </div>
-    </div>
-  </div>
+  <p class="text-xs opacity-50 -mt-4 mb-4">Età e genere non disponibili: GA4 li restituisce solo con "Google Signals" attivo sulla property (non attivo qui).</p>
 
   <div class="card bg-base-100 shadow">
     <div class="card-body">
@@ -153,7 +137,7 @@ let DATA = null;
 let EVENTS = [];
 let period = 30;
 let geoMode = "country";
-let charts = { overview: null, channels: null, donut: null, engagement: null, age: null, gender: null };
+let charts = { overview: null, channels: null, donut: null, engagement: null };
 
 function annotationPlugin(labels) {
   if (!$("chk-events").checked) return {};
@@ -253,40 +237,6 @@ function renderEngagementChart() {
           ? ` ${ctx.dataset.label}: ${fmtSecs(ctx.parsed.y)}` : ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}%` } },
         ...annotationPlugin(labels),
       },
-    },
-  });
-}
-
-function renderAgeChart() {
-  if (charts.age) charts.age.destroy();
-  const rows = DATA.age.filter(r => inPeriod(r.date));
-  const totals = {};
-  rows.forEach(r => { totals[r.bracket] = (totals[r.bracket] || 0) + r.totalUsers; });
-  const order = ["18-24", "25-34", "35-44", "45-54", "55-64", "65+", "(sconosciuta)"];
-  const brackets = Object.keys(totals).sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  charts.age = new Chart($("chart-age"), {
-    type: "bar",
-    data: { labels: brackets, datasets: [{ label: "Utenti", data: brackets.map(b => totals[b]), backgroundColor: PALETTE[0], borderRadius: 4 }] },
-    options: {
-      maintainAspectRatio: false, indexAxis: "y",
-      scales: { x: { grid: { color: "#e5e7eb" } }, y: { grid: { display: false } } },
-      plugins: { legend: { display: false } },
-    },
-  });
-}
-
-function renderGenderChart() {
-  if (charts.gender) charts.gender.destroy();
-  const rows = DATA.gender.filter(r => inPeriod(r.date));
-  const totals = {};
-  rows.forEach(r => { totals[r.gender] = (totals[r.gender] || 0) + r.totalUsers; });
-  const genders = Object.keys(totals);
-  charts.gender = new Chart($("chart-gender"), {
-    type: "doughnut",
-    data: { labels: genders, datasets: [{ data: genders.map(g => totals[g]), backgroundColor: genders.map((g, i) => PALETTE[i % PALETTE.length]) }] },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 10 } } },
     },
   });
 }
@@ -414,8 +364,6 @@ function renderAll() {
   renderEventsTable();
   renderPagesTable();
   renderSourcesTable();
-  renderAgeChart();
-  renderGenderChart();
   renderGeoTable();
 }
 
