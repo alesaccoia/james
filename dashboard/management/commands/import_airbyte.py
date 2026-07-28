@@ -45,6 +45,8 @@ NATURAL_KEYS = {
     'ga_demographic_gender_report': lambda d: f"{d.get('date')}|{d.get('userGender')}",
     'ga_demographic_country_report': lambda d: f"{d.get('date')}|{d.get('country')}",
     'ga_demographic_city_report': lambda d: f"{d.get('date')}|{d.get('city')}",
+    'mentor_leads': lambda d: d.get('id'),
+    'mentor_lead_status_events': lambda d: d.get('id'),
 }
 
 META_COLS = {'_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_meta', '_airbyte_generation_id'}
