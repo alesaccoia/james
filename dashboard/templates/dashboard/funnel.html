@@ -237,34 +237,64 @@ function renderChart() {
   });
 }
 
-function renderCampaignTable(stage) {
-  const rows = (stage.campaign_rows || []).filter(r => inPeriod(r.date));
-  if (!rows.length) return "";
-  const bySource = {};
-  rows.forEach(r => {
-    const key = r.source_id;
-    const acc = bySource[key] = bySource[key] || { source: r.source, kind: r.kind, spend: 0, leads: 0 };
+const KIND_LABEL = { campaign: "Campagna", ad_set: "Ad set", ad: "Ad" };
+
+window.toggleFunnelRow = (id) => {
+  const row = document.getElementById(id);
+  if (!row) return;
+  row.classList.toggle("hidden");
+  const arrow = document.getElementById(id + "-arrow");
+  if (arrow) arrow.textContent = row.classList.contains("hidden") ? "▸" : "▾";
+};
+
+function aggregateRows(rows) {
+  const by = {};
+  rows.filter(r => inPeriod(r.date)).forEach(r => {
+    const key = r.external_id || r.source;
+    const acc = by[key] = by[key] || { source: r.source, kind: r.kind, external_id: r.external_id, spend: 0, leads: 0 };
     acc.spend += r.spend;
     acc.leads += r.leads;
   });
-  const list = Object.values(bySource).sort((a, b) => b.spend - a.spend);
-  const kindLabel = { campaign: "Campagna", ad_set: "Ad set", ad: "Ad" };
-  const body = list.map(s => {
-    const cpl = s.leads ? s.spend / s.leads : null;
-    return `<tr>
-      <td><span class="badge badge-ghost badge-sm">${kindLabel[s.kind] || s.kind}</span></td>
-      <td>${s.source}</td>
+  return Object.values(by).sort((a, b) => b.spend - a.spend);
+}
+
+function renderSourceRow(stage, s, rowId, level) {
+  const cpl = s.leads ? s.spend / s.leads : null;
+  const children = s.external_id && stage.drilldown ? stage.drilldown[s.external_id] : null;
+  const hasChildren = !!(children && children.length);
+  return `
+    <tr class="${hasChildren ? 'cursor-pointer hover' : ''}" ${hasChildren ? `onclick="toggleFunnelRow('${rowId}')"` : ''}>
+      <td style="padding-left:${level * 16}px">
+        ${hasChildren ? `<span id="${rowId}-arrow" class="opacity-50 mr-1">▸</span>` : ''}
+        ${s.source}
+        ${s.kind ? `<span class="badge badge-ghost badge-xs ml-1">${KIND_LABEL[s.kind] || s.kind}</span>` : ''}
+      </td>
       <td class="text-right">${fmtEUR.format(s.spend)}</td>
       <td class="text-right">${fmt(s.leads)}</td>
       <td class="text-right">${cpl == null ? "—" : fmtEURc.format(cpl)}</td>
-    </tr>`;
-  }).join("");
+    </tr>
+    ${hasChildren ? `
+      <tr class="hidden" id="${rowId}"><td colspan="4" class="p-0">
+        <table class="table table-xs w-full">
+          <tbody>${renderChildRows(stage, children, rowId, level + 1)}</tbody>
+        </table>
+      </td></tr>` : ''}`;
+}
+
+function renderChildRows(stage, rows, parentRowId, level) {
+  return aggregateRows(rows).map((s, i) => renderSourceRow(stage, s, `${parentRowId}-${i}`, level)).join("");
+}
+
+function renderCampaignTable(stage) {
+  const list = aggregateRows(stage.campaign_rows || []);
+  if (!list.length) return "";
+  const body = list.map((s, i) => renderSourceRow(stage, s, `dd-${stage.id}-${i}`, 0)).join("");
   return `
     <div class="mt-4">
-      <div class="text-xs font-semibold opacity-60 mb-1">Per campagna (periodo selezionato)</div>
+      <div class="text-xs font-semibold opacity-60 mb-1">Per campagna (periodo selezionato) — clicca una riga per vedere gli ad set/ad sotto</div>
       <div class="overflow-x-auto">
         <table class="table table-xs">
-          <thead><tr><th></th><th>nome</th><th class="text-right">spesa</th><th class="text-right">lead</th><th class="text-right">cpl</th></tr></thead>
+          <thead><tr><th>nome</th><th class="text-right">spesa</th><th class="text-right">lead</th><th class="text-right">cpl</th></tr></thead>
           <tbody>${body}</tbody>
         </table>
       </div>

@@ -379,13 +379,12 @@ def _fb_insight_rows_for_source(source, insight_rows):
     return [d for d in insight_rows if d.get(name_field) == source.name]
 
 
-def _stage_campaign_rows(stage):
-    """Flat per-source, per-day rows (source name/kind, date, spend, leads)
-    for every Meta campaign/ad set/ad tagged onto this stage. Raw material
-    for both the computed KPIs below and the per-campaign breakdown table —
-    left unaggregated so the frontend can bucket/filter it by period and by
-    day/week/month itself, the same way the Meta Ads page does."""
-    insight_rows = list(_stream_rows('fb_ads_insights'))
+def _stage_campaign_rows(stage, insight_rows):
+    """Flat per-source, per-day rows (source name/kind/id, date, spend,
+    leads) for every Meta campaign/ad set/ad tagged onto this stage. Raw
+    material for both the computed KPIs below and the per-campaign
+    breakdown table — left unaggregated so the frontend can bucket/filter
+    it by period and by day/week/month itself, like the Meta Ads page."""
     by_key = {}
     for source in stage.sources.all():
         for d in _fb_insight_rows_for_source(source, insight_rows):
@@ -394,11 +393,56 @@ def _stage_campaign_rows(stage):
                 continue
             key = (source.pk, date)
             row = by_key.setdefault(key, {'source': source.name, 'kind': source.kind,
-                                          'source_id': source.pk, 'date': date,
+                                          'external_id': source.external_id, 'date': date,
                                           'spend': 0.0, 'leads': 0.0})
             row['spend'] += _num(d.get('spend'))
             row['leads'] += _fb_action_value(d, 'lead')
     return sorted(by_key.values(), key=lambda r: (r['date'], r['source']))
+
+
+def _fb_children_rows(insight_rows, parent_field, parent_id, child_id_field, child_name_field):
+    """Per-day rows for each child entity found in fb_ads_insights under a
+    Meta parent id (ad sets under a campaign, or ads under an ad set) —
+    dynamic, doesn't require an explicit FunnelStageSource per child. This
+    is what powers "drill down to ad set / ad level" without having to
+    attach every single one by hand."""
+    by_key = {}
+    for d in insight_rows:
+        if str(d.get(parent_field) or '') != parent_id:
+            continue
+        date = str(d.get('date_start') or '')[:10]
+        cid = str(d.get(child_id_field) or '')
+        if not date or not cid:
+            continue
+        key = (cid, date)
+        row = by_key.setdefault(key, {'source': d.get(child_name_field) or cid,
+                                      'external_id': cid, 'date': date,
+                                      'spend': 0.0, 'leads': 0.0})
+        row['spend'] += _num(d.get('spend'))
+        row['leads'] += _fb_action_value(d, 'lead')
+    return sorted(by_key.values(), key=lambda r: (r['date'], r['source']))
+
+
+def _stage_drilldown(stage, insight_rows):
+    """{meta_id: [child rows]} - ad sets under each campaign attached to
+    this stage, and ads under each of those ad sets (whether the ad set
+    was explicitly attached or just discovered under an attached
+    campaign). Keyed by Meta id so the frontend can expand any row in the
+    breakdown table one level deeper, recursively."""
+    drilldown = {}
+    for source in stage.sources.all():
+        if source.kind == 'campaign' and source.external_id:
+            drilldown[source.external_id] = _fb_children_rows(
+                insight_rows, 'campaign_id', source.external_id, 'adset_id', 'adset_name')
+        elif source.kind == 'ad_set' and source.external_id:
+            drilldown[source.external_id] = _fb_children_rows(
+                insight_rows, 'adset_id', source.external_id, 'ad_id', 'ad_name')
+    for rows in list(drilldown.values()):
+        for r in rows:
+            if r['external_id'] not in drilldown:
+                drilldown[r['external_id']] = _fb_children_rows(
+                    insight_rows, 'adset_id', r['external_id'], 'ad_id', 'ad_name')
+    return drilldown
 
 
 def _leads_series_from_rows(campaign_rows):
@@ -440,9 +484,11 @@ def funnel(request):
 
 @login_required
 def data_funnel(request):
+    insight_rows = list(_stream_rows('fb_ads_insights'))
     stages = []
     for stage in FunnelStage.objects.filter(is_active=True).prefetch_related('kpis__values', 'sources'):
-        campaign_rows = _stage_campaign_rows(stage)
+        campaign_rows = _stage_campaign_rows(stage, insight_rows)
+        drilldown = _stage_drilldown(stage, insight_rows)
         kpis = []
         for kpi in stage.kpis.filter(is_active=True):
             computed_fn = FUNNEL_COMPUTED_KPIS.get(kpi.name)
@@ -470,6 +516,7 @@ def data_funnel(request):
                         'name': s.name, 'external_id': s.external_id}
                        for s in stage.sources.all()],
             'campaign_rows': campaign_rows,
+            'drilldown': drilldown,
         })
     return JsonResponse({'stages': stages})
 
