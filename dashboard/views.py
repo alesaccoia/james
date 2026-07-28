@@ -7,7 +7,7 @@ from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 
-from .models import AirbyteRecord, MarketingEvent
+from .models import AirbyteRecord, FunnelStage, MarketingEvent
 
 # One entry per Airbyte stream we know how to turn into marketing KPIs.
 # Add a new entry here whenever a new source (Google Ads, TikTok Ads,
@@ -343,6 +343,43 @@ def event_delete(request, pk):
             event.delete()
             messages.success(request, f'Evento "{name}" eliminato.')
     return redirect('dashboard:events')
+
+
+# --------------------------------------------------------------- Funnel
+
+@login_required
+def funnel(request):
+    cfg = {'data_url': reverse('dashboard:data_funnel')}
+    return render(request, 'dashboard/funnel.html', {
+        'cfg_json': json.dumps(cfg),
+        'has_data': FunnelStage.objects.exists(),
+    })
+
+
+@login_required
+def data_funnel(request):
+    stages = []
+    for stage in FunnelStage.objects.filter(is_active=True).prefetch_related('kpis__values', 'sources'):
+        kpis = []
+        for kpi in stage.kpis.filter(is_active=True):
+            kpis.append({
+                'id': kpi.pk,
+                'name': kpi.name,
+                'unit': kpi.unit,
+                'target_value': kpi.target_value,
+                'series': [{'date': v.date.isoformat(), 'value': v.value, 'note': v.note}
+                          for v in sorted(kpi.values.all(), key=lambda v: v.date)],
+            })
+        stages.append({
+            'id': stage.pk,
+            'name': stage.name,
+            'slug': stage.slug,
+            'description': stage.description,
+            'kpis': kpis,
+            'sources': [{'kind': s.kind, 'kind_label': s.get_kind_display(), 'name': s.name}
+                       for s in stage.sources.all()],
+        })
+    return JsonResponse({'stages': stages})
 
 
 @login_required

@@ -1,0 +1,231 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Funnel{% endblock %}
+{% block nav_funnel %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Funnel di marketing</h1>
+    <p class="text-sm opacity-60">Fasi, KPI e la loro evoluzione nel tempo. Le fasi e i KPI si gestiscono da <a class="link" href="/admin/dashboard/funnelstage/">Admin</a> — questa pagina serve a vederne l'andamento.</p>
+  </div>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Nessuna fase di funnel ancora definita. Creane una da <a class="link" href="/admin/dashboard/funnelstage/add/">Admin &rsaquo; Funnel stage</a>.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <div class="divider">Evoluzione nel tempo</div>
+
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="join">
+      <button class="btn btn-sm join-item" id="btn-mode-abs">Valori assoluti</button>
+      <button class="btn btn-sm join-item" id="btn-mode-norm">Normalizzato (indice 100)</button>
+    </div>
+    <label class="label cursor-pointer gap-2">
+      <input type="checkbox" id="chk-events" class="checkbox checkbox-sm">
+      <span class="label-text text-sm">Mostra eventi</span>
+    </label>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-10">
+    <div class="card bg-base-100 shadow lg:col-span-1 h-fit">
+      <div class="card-body">
+        <h2 class="card-title text-base">KPI</h2>
+        <p class="text-xs opacity-60 mb-2">Seleziona i KPI da mettere sul grafico — puoi mischiare fasi diverse.</p>
+        <div id="kpi-picker" class="flex flex-col gap-1"></div>
+      </div>
+    </div>
+    <div class="card bg-base-100 shadow lg:col-span-3">
+      <div class="card-body">
+        <h2 class="card-title">Andamento</h2>
+        <p class="text-sm opacity-60" id="chart-hint"></p>
+        <div class="h-96 relative"><canvas id="chart-funnel"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="divider">Fasi del funnel</div>
+
+  <div id="stage-cards" class="flex flex-col gap-6"></div>
+
+</div>
+
+<script>const FUNNEL_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = FUNNEL_CFG.data_url;
+const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171", "#2dd4bf", "#fb923c", "#c084fc", "#94a3b8"];
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 2 });
+const fmtEUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+const fmtByUnit = (v, unit) => {
+  if (v == null) return "—";
+  if (unit === "eur") return fmtEUR.format(v);
+  if (unit === "percent") return fmtN.format(v) + "%";
+  return fmtN.format(v);
+};
+
+let STAGES = [];
+let KPI_DEFS = {};   // key -> {label, stage, unit, target_value, series}
+let EVENTS = [];
+let selected = new Set();
+let mode = "abs"; // abs | norm
+let chart = null;
+
+const keyOf = (kpi) => "k" + kpi.id;
+const colorOf = (key) => PALETTE[Object.keys(KPI_DEFS).indexOf(key) % PALETTE.length];
+
+function renderModeButtons() {
+  $("btn-mode-abs").classList.toggle("btn-active", mode === "abs");
+  $("btn-mode-norm").classList.toggle("btn-active", mode === "norm");
+}
+$("btn-mode-abs").onclick = () => { mode = "abs"; renderChart(); };
+$("btn-mode-norm").onclick = () => { mode = "norm"; renderChart(); };
+$("chk-events").addEventListener("change", renderChart);
+
+function renderPicker() {
+  let html = "";
+  for (const stage of STAGES) {
+    if (!stage.kpis.length) continue;
+    html += `<div class="text-xs font-semibold opacity-60 mt-2 first:mt-0">${stage.name}</div>`;
+    for (const kpi of stage.kpis) {
+      const key = keyOf(kpi);
+      html += `
+        <label class="label cursor-pointer justify-start gap-2 py-1">
+          <input type="checkbox" class="checkbox checkbox-sm" data-k="${key}" ${selected.has(key) ? "checked" : ""}
+                 style="accent-color:${colorOf(key)}">
+          <span class="label-text text-sm">${kpi.name}</span>
+        </label>`;
+    }
+  }
+  $("kpi-picker").innerHTML = html;
+  $("kpi-picker").querySelectorAll("input").forEach(cb => {
+    cb.onchange = () => {
+      if (cb.checked) selected.add(cb.dataset.k); else selected.delete(cb.dataset.k);
+      renderChart();
+    };
+  });
+}
+
+function renderChart() {
+  renderModeButtons();
+  if (chart) chart.destroy();
+  const keys = [...selected];
+  if (!keys.length) {
+    $("chart-hint").textContent = "Seleziona almeno un KPI a sinistra.";
+    return;
+  }
+  const allDates = new Set();
+  keys.forEach(k => (KPI_DEFS[k].series || []).forEach(p => allDates.add(p.date)));
+  const dates = [...allDates].sort();
+
+  const datasets = keys.map(k => {
+    const def = KPI_DEFS[k];
+    const byDate = Object.fromEntries((def.series || []).map(p => [p.date, p.value]));
+    const absValues = dates.map(d => byDate[d] ?? null);
+    let values = absValues;
+    if (mode === "norm") {
+      const max = Math.max(...absValues.filter(v => v != null), 0) || 1;
+      values = absValues.map(v => v == null ? null : (v / max) * 100);
+    }
+    return {
+      label: `${def.stage} · ${def.label}`,
+      data: values, _abs: absValues, _unit: def.unit,
+      borderColor: colorOf(k), backgroundColor: colorOf(k),
+      borderWidth: 2, pointRadius: 2, tension: .25, spanGaps: true,
+    };
+  });
+
+  $("chart-hint").textContent = mode === "norm"
+    ? "Ogni KPI è riscalato sul proprio massimo (=100) per confrontare l'andamento, non il valore assoluto."
+    : "Valori assoluti, ciascuno nella propria unità (attenzione a mischiare €, % e conteggi sullo stesso asse).";
+
+  chart = new Chart($("chart-funnel"), {
+    type: "line",
+    data: { labels: dates, datasets },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { color: "#e5e7eb" } },
+        y: { grid: { color: "#e5e7eb" }, ticks: { callback: v => mode === "norm" ? v + "%" : fmtN.format(v) } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
+        tooltip: { callbacks: { label: ctx => {
+          const abs = fmtByUnit(ctx.dataset._abs[ctx.dataIndex], ctx.dataset._unit);
+          return mode === "norm" ? ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}% (${abs})` : ` ${ctx.dataset.label}: ${abs}`;
+        } } },
+        ...($("chk-events").checked ? { annotation: { annotations: MarketingEvents.annotations(EVENTS, dates) } } : {}),
+      },
+    },
+  });
+}
+
+function renderStageCards() {
+  $("stage-cards").innerHTML = STAGES.map(stage => {
+    const sourcesHtml = stage.sources.length
+      ? stage.sources.map(s => `<span class="badge badge-ghost badge-sm mr-1 mb-1">${s.kind_label}: ${s.name}</span>`).join("")
+      : `<span class="opacity-40 text-xs">nessuna campagna/ad set associata</span>`;
+    const kpiRows = stage.kpis.map(kpi => {
+      const series = kpi.series || [];
+      const latest = series.length ? series[series.length - 1] : null;
+      return `
+        <tr>
+          <td>${kpi.name}</td>
+          <td class="text-right">${latest ? fmtByUnit(latest.value, kpi.unit) : "—"}</td>
+          <td class="text-right opacity-60">${latest ? latest.date : "—"}</td>
+          <td class="text-right opacity-60">${kpi.target_value != null ? fmtByUnit(kpi.target_value, kpi.unit) : "—"}</td>
+        </tr>`;
+    }).join("");
+    return `
+      <div class="card bg-base-100 shadow">
+        <div class="card-body">
+          <h2 class="card-title text-base">${stage.name}</h2>
+          ${stage.description ? `<p class="text-sm opacity-60">${stage.description}</p>` : ""}
+          <div class="mb-2">${sourcesHtml}</div>
+          <div class="overflow-x-auto">
+            <table class="table table-sm">
+              <thead><tr><th>KPI</th><th class="text-right">ultimo valore</th><th class="text-right">data</th><th class="text-right">obiettivo</th></tr></thead>
+              <tbody>${kpiRows || '<tr><td colspan="4" class="opacity-50">nessun KPI in questa fase</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+async function load() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const json = await r.json();
+    STAGES = json.stages || [];
+    KPI_DEFS = {};
+    STAGES.forEach(stage => stage.kpis.forEach(kpi => {
+      KPI_DEFS[keyOf(kpi)] = { label: kpi.name, stage: stage.name, unit: kpi.unit,
+                               target_value: kpi.target_value, series: kpi.series };
+    }));
+    if (!STAGES.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    selected = new Set(Object.keys(KPI_DEFS).slice(0, 3));
+    EVENTS = await MarketingEvents.load();
+    renderPicker();
+    renderChart();
+    renderStageCards();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}
