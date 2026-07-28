@@ -10,6 +10,7 @@ an overlapping date range never piles up duplicates.
 Run manually, e.g.:
   .venv/bin/python manage.py import_airbyte
 """
+import json
 from datetime import datetime, date, timezone as dt_timezone
 from decimal import Decimal
 
@@ -42,6 +43,13 @@ def _jsonable(v):
         return v.isoformat()
     if isinstance(v, Decimal):
         return float(v)
+    if isinstance(v, str) and v[:1] in '{[':
+        # jsonb columns (e.g. ads_insights.actions) come back from the raw
+        # cursor as their JSON text representation, not a parsed object.
+        try:
+            return json.loads(v)
+        except (json.JSONDecodeError, ValueError):
+            return v
     return v
 
 
