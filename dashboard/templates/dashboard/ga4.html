@@ -31,6 +31,14 @@
     </div>
   </div>
 
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Bounce rate e durata sessione nel tempo</h2>
+      <p class="text-sm opacity-60">Bounce rate (asse sinistro, %) e durata media sessione (asse destro, secondi).</p>
+      <div class="h-72 relative"><canvas id="chart-engagement"></canvas></div>
+    </div>
+  </div>
+
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
     <div class="card bg-base-100 shadow">
       <div class="card-body">
@@ -79,6 +87,42 @@
     </div>
   </div>
 
+  <div class="divider mt-8">Dati demografici</div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <div class="card bg-base-100 shadow">
+      <div class="card-body">
+        <h2 class="card-title">Età</h2>
+        <p class="text-sm opacity-60">Utenti per fascia d'età, periodo selezionato.</p>
+        <div class="h-72 relative"><canvas id="chart-age"></canvas></div>
+      </div>
+    </div>
+    <div class="card bg-base-100 shadow">
+      <div class="card-body">
+        <h2 class="card-title">Genere</h2>
+        <p class="text-sm opacity-60">Utenti per genere, periodo selezionato.</p>
+        <div class="h-72 relative"><canvas id="chart-gender"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Geografia</h2>
+      <p class="text-sm opacity-60">Utenti per paese e città, periodo selezionato.</p>
+      <div class="flex flex-wrap items-center gap-3 mb-2">
+        <div class="join" id="geo-tabs">
+          <button class="btn btn-sm join-item" data-g="country">Paesi</button>
+          <button class="btn btn-sm join-item" data-g="city">Città</button>
+        </div>
+        <input type="text" id="f-geo" placeholder="cerca…" class="input input-bordered input-sm w-full max-w-xs">
+      </div>
+      <div class="overflow-x-auto max-h-96">
+        <table class="table table-zebra table-pin-rows table-sm" id="geo-table"></table>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
@@ -102,7 +146,8 @@ const fmtSecs = (v) => {
 
 let DATA = null;
 let period = 30;
-let charts = { overview: null, channels: null, donut: null };
+let geoMode = "country";
+let charts = { overview: null, channels: null, donut: null, engagement: null, age: null, gender: null };
 
 function daysAgo(n) {
   const d = new Date();
@@ -170,6 +215,92 @@ function renderOverviewChart() {
   });
 }
 
+function renderEngagementChart() {
+  if (charts.engagement) charts.engagement.destroy();
+  const rows = DATA.overview.filter(r => inPeriod(r.date)).sort((a, b) => a.date < b.date ? -1 : 1);
+  charts.engagement = new Chart($("chart-engagement"), {
+    type: "line",
+    data: {
+      labels: rows.map(r => r.date),
+      datasets: [
+        { label: "Bounce rate", data: rows.map(r => r.bounceRate), borderColor: PALETTE[5], backgroundColor: PALETTE[5], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y" },
+        { label: "Durata sessione media (s)", data: rows.map(r => r.avgSessionDuration), borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y1" },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { color: "#e5e7eb" } },
+        y: { position: "left", beginAtZero: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => v + "%" } },
+        y1: { position: "right", beginAtZero: true, grid: { display: false }, ticks: { callback: v => fmtSecs(v) } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
+        tooltip: { callbacks: { label: ctx => ctx.dataset.yAxisID === "y1"
+          ? ` ${ctx.dataset.label}: ${fmtSecs(ctx.parsed.y)}` : ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}%` } },
+      },
+    },
+  });
+}
+
+function renderAgeChart() {
+  if (charts.age) charts.age.destroy();
+  const rows = DATA.age.filter(r => inPeriod(r.date));
+  const totals = {};
+  rows.forEach(r => { totals[r.bracket] = (totals[r.bracket] || 0) + r.totalUsers; });
+  const order = ["18-24", "25-34", "35-44", "45-54", "55-64", "65+", "(sconosciuta)"];
+  const brackets = Object.keys(totals).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  charts.age = new Chart($("chart-age"), {
+    type: "bar",
+    data: { labels: brackets, datasets: [{ label: "Utenti", data: brackets.map(b => totals[b]), backgroundColor: PALETTE[0], borderRadius: 4 }] },
+    options: {
+      maintainAspectRatio: false, indexAxis: "y",
+      scales: { x: { grid: { color: "#e5e7eb" } }, y: { grid: { display: false } } },
+      plugins: { legend: { display: false } },
+    },
+  });
+}
+
+function renderGenderChart() {
+  if (charts.gender) charts.gender.destroy();
+  const rows = DATA.gender.filter(r => inPeriod(r.date));
+  const totals = {};
+  rows.forEach(r => { totals[r.gender] = (totals[r.gender] || 0) + r.totalUsers; });
+  const genders = Object.keys(totals);
+  charts.gender = new Chart($("chart-gender"), {
+    type: "doughnut",
+    data: { labels: genders, datasets: [{ data: genders.map(g => totals[g]), backgroundColor: genders.map((g, i) => PALETTE[i % PALETTE.length]) }] },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 10 } } },
+    },
+  });
+}
+
+function renderGeoTable() {
+  $("geo-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.g === geoMode);
+    b.onclick = () => { geoMode = b.dataset.g; renderGeoTable(); };
+  });
+  const ft = $("f-geo").value.toLowerCase();
+  const key = geoMode === "country" ? "country" : "city";
+  const rows = DATA.geo.filter(r => inPeriod(r.date) && r[key] != null);
+  const totals = {};
+  rows.forEach(r => {
+    const name = r[key];
+    if (ft && !name.toLowerCase().includes(ft)) return;
+    totals[name] = totals[name] || { users: 0, newUsers: 0 };
+    totals[name].users += r.totalUsers;
+    totals[name].newUsers += r.newUsers;
+  });
+  const list = Object.entries(totals).sort((a, b) => b[1].users - a[1].users).slice(0, 30);
+  const label = geoMode === "country" ? "paese" : "città";
+  const body = list.map(([name, v]) => `
+    <tr><td>${name}</td><td class="text-right">${fmt(v.users)}</td><td class="text-right">${fmt(v.newUsers)}</td></tr>`).join("");
+  $("geo-table").innerHTML =
+    `<thead><tr><th>${label}</th><th class="text-right">utenti</th><th class="text-right">nuovi utenti</th></tr></thead><tbody>${body || '<tr><td colspan="3" class="opacity-50">nessun dato</td></tr>'}</tbody>`;
+}
+
 function renderChannelsChart() {
   if (charts.channels) charts.channels.destroy();
   if (charts.donut) charts.donut.destroy();
@@ -230,15 +361,17 @@ function renderPagesTable() {
   const rows = DATA.pages.filter(r => inPeriod(r.date));
   const totals = {};
   rows.forEach(r => {
-    totals[r.path] = totals[r.path] || { views: 0, users: 0 };
+    totals[r.path] = totals[r.path] || { views: 0, users: 0, duration: 0 };
     totals[r.path].views += r.screenPageViews;
     totals[r.path].users += r.totalUsers;
+    totals[r.path].duration += r.engagementDuration;
   });
   const list = Object.entries(totals).sort((a, b) => b[1].views - a[1].views).slice(0, 25);
   const body = list.map(([path, v]) => `
-    <tr><td class="max-w-xs truncate" title="${path}">${path}</td><td class="text-right">${fmt(v.views)}</td><td class="text-right">${fmt(v.users)}</td></tr>`).join("");
+    <tr><td class="max-w-xs truncate" title="${path}">${path}</td><td class="text-right">${fmt(v.views)}</td><td class="text-right">${fmt(v.users)}</td>
+    <td class="text-right">${fmtSecs(v.users ? v.duration / v.users : null)}</td></tr>`).join("");
   $("pages-table").innerHTML =
-    `<thead><tr><th>pagina</th><th class="text-right">pageview</th><th class="text-right">utenti</th></tr></thead><tbody>${body || '<tr><td colspan="3" class="opacity-50">nessuna pagina</td></tr>'}</tbody>`;
+    `<thead><tr><th>pagina</th><th class="text-right">pageview</th><th class="text-right">utenti</th><th class="text-right">tempo medio</th></tr></thead><tbody>${body || '<tr><td colspan="4" class="opacity-50">nessuna pagina</td></tr>'}</tbody>`;
 }
 
 function renderSourcesTable() {
@@ -262,13 +395,18 @@ function renderAll() {
   $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
   renderKPIs();
   renderOverviewChart();
+  renderEngagementChart();
   renderChannelsChart();
   renderEventsTable();
   renderPagesTable();
   renderSourcesTable();
+  renderAgeChart();
+  renderGenderChart();
+  renderGeoTable();
 }
 
 $("btn-reload").onclick = load;
+$("f-geo").addEventListener("input", renderGeoTable);
 
 async function load() {
   try {

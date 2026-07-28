@@ -149,6 +149,7 @@ def data_ga4(request):
             'screenPageViews': _num(d.get('screenPageViews')),
             'totalUsers': _num(d.get('totalUsers')),
             'eventCount': _num(d.get('eventCount')),
+            'engagementDuration': _num(d.get('userEngagementDuration')),
         })
 
     sources = []
@@ -165,9 +166,62 @@ def data_ga4(request):
             'engagementRate': _num(d.get('engagementRate')) * 100,
         })
 
+    age = []
+    for d in _stream_rows('ga_demographic_age_report'):
+        date = _ga_date(d.get('date'))
+        if not date:
+            continue
+        age.append({
+            'date': date,
+            'bracket': d.get('userAgeBracket') or '(sconosciuta)',
+            'totalUsers': _num(d.get('totalUsers')),
+            'newUsers': _num(d.get('newUsers')),
+            'engagementRate': _num(d.get('engagementRate')) * 100,
+        })
+
+    gender = []
+    for d in _stream_rows('ga_demographic_gender_report'):
+        date = _ga_date(d.get('date'))
+        if not date:
+            continue
+        gender.append({
+            'date': date,
+            'gender': d.get('userGender') or '(sconosciuto)',
+            'totalUsers': _num(d.get('totalUsers')),
+            'newUsers': _num(d.get('newUsers')),
+            'engagementRate': _num(d.get('engagementRate')) * 100,
+        })
+
+    geo = []
+    for d in _stream_rows('ga_demographic_country_report'):
+        date = _ga_date(d.get('date'))
+        if not date:
+            continue
+        geo.append({
+            'date': date,
+            'country': d.get('country') or '(sconosciuto)',
+            'city': None,
+            'totalUsers': _num(d.get('totalUsers')),
+            'newUsers': _num(d.get('newUsers')),
+            'engagementRate': _num(d.get('engagementRate')) * 100,
+        })
+    for d in _stream_rows('ga_demographic_city_report'):
+        date = _ga_date(d.get('date'))
+        if not date:
+            continue
+        geo.append({
+            'date': date,
+            'country': None,
+            'city': d.get('city') or '(sconosciuta)',
+            'totalUsers': _num(d.get('totalUsers')),
+            'newUsers': _num(d.get('newUsers')),
+            'engagementRate': _num(d.get('engagementRate')) * 100,
+        })
+
     return JsonResponse({
         'overview': overview, 'channels': channels, 'campaigns': campaigns,
         'events': events, 'pages': pages, 'sources': sources,
+        'age': age, 'gender': gender, 'geo': geo,
     })
 
 
