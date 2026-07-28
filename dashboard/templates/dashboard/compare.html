@@ -1,12 +1,12 @@
 {% extends 'dashboard/base.html' %}
-{% block title %}Confronto{% endblock %}
+{% block title %}Home{% endblock %}
 {% block nav_compare %}btn-active{% endblock %}
 {% block content %}
 
 <div class="flex flex-wrap items-center gap-3 mb-6">
   <div>
-    <h1 class="text-2xl font-bold">Confronto tra fonti</h1>
-    <p class="text-sm opacity-60">Metti insieme metriche di canali diversi sullo stesso grafico</p>
+    <h1 class="text-2xl font-bold">Panoramica</h1>
+    <p class="text-sm opacity-60">Tutte le fonti insieme, in un colpo d'occhio</p>
   </div>
   <div class="grow"></div>
   <div class="badge badge-lg badge-outline" id="pill-range">periodo: —</div>
@@ -18,6 +18,11 @@
 </div>
 
 <div id="content" class="hidden">
+
+  <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="overview-kpis"></div>
+
+  <div class="divider">Confronto tra fonti</div>
+  <p class="text-sm opacity-60 -mt-4 mb-4">Metti insieme metriche di canali diversi sullo stesso grafico.</p>
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
     <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
@@ -208,10 +213,38 @@ function renderTotals() {
      <tbody>${rows || '<tr><td colspan="4" class="opacity-50">nessuna metrica selezionata</td></tr>'}</tbody>`;
 }
 
+function totalOf(key) {
+  return filteredSeries(key).reduce((s, p) => s + p.value, 0);
+}
+
+function renderOverviewKPIs() {
+  const spend = totalOf("fb_spend");
+  const fbLeads = totalOf("fb_leads");
+  const cpl = fbLeads ? spend / fbLeads : null;
+  const sessions = totalOf("ga_sessions");
+  const gaLeads = totalOf("ga_leads");
+  const users = totalOf("ga_users");
+
+  const defs = [
+    { name: "Spesa Meta Ads", val: fmtEUR.format(spend) },
+    { name: "Lead Meta Ads", val: fmt(fbLeads) },
+    { name: "CPL medio", val: cpl == null ? "—" : new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", minimumFractionDigits: 2 }).format(cpl) },
+    { name: "Sessioni sito", val: fmt(sessions) },
+    { name: "Utenti sito", val: fmt(users) },
+    { name: "Lead generati (GA4)", val: fmt(gaLeads) },
+  ];
+  $("overview-kpis").innerHTML = defs.map(d => `
+    <div class="stat">
+      <div class="stat-title">${d.name}</div>
+      <div class="stat-value text-2xl">${d.val}</div>
+    </div>`).join("");
+}
+
 function renderAll() {
   renderPeriodTabs();
   renderModeButtons();
   $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
+  renderOverviewKPIs();
   renderChart();
   renderTotals();
 }

@@ -124,7 +124,7 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 LOGIN_URL = 'login'
-LOGIN_REDIRECT_URL = 'dashboard:dashboard'
+LOGIN_REDIRECT_URL = 'dashboard:compare'
 
 if not DEBUG:
     SECURE_SSL_REDIRECT = True
