@@ -11,9 +11,9 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
 <script src="{% static 'dashboard/events.js' %}"></script>
 </head>
-<body class="min-h-screen bg-base-200">
-<div class="navbar bg-base-100 shadow-sm px-4 flex-wrap gap-y-2 py-2">
-  <div class="flex flex-wrap items-center gap-1 flex-1 min-w-fit">
+<body class="min-h-screen bg-base-200 flex flex-col">
+<div class="navbar bg-base-100 shadow-sm">
+  <div class="flex flex-wrap items-center gap-1 max-w-7xl mx-auto w-full px-4 py-2 gap-y-2">
     <a href="{% url 'dashboard:compare' %}" class="btn btn-ghost text-xl">James</a>
     {% if user.is_authenticated %}
       <a href="{% url 'dashboard:compare' %}" class="btn btn-sm btn-ghost {% block nav_compare %}{% endblock %}">Confronto</a>
@@ -22,18 +22,16 @@
       <div class="divider divider-horizontal mx-0"></div>
       <a href="{% url 'competitors:traffic' %}" class="btn btn-sm btn-ghost {% block nav_competitors %}{% endblock %}">Competitor</a>
       <a href="{% url 'dashboard:events' %}" class="btn btn-sm btn-ghost {% block nav_events %}{% endblock %}">Eventi</a>
-    {% endif %}
-  </div>
-  <div class="flex items-center gap-2 flex-none">
-    {% if user.is_authenticated %}
-      <span class="text-sm opacity-70 hidden sm:inline">{{ user.get_full_name|default:user.username }}</span>
-      <form method="post" action="{% url 'logout' %}">{% csrf_token %}
-        <button class="btn btn-sm btn-outline" type="submit">Esci</button>
-      </form>
+      <div class="flex items-center gap-2 ml-auto">
+        <span class="text-sm opacity-70 hidden sm:inline">{{ user.get_full_name|default:user.username }}</span>
+        <form method="post" action="{% url 'logout' %}">{% csrf_token %}
+          <button class="btn btn-sm btn-outline" type="submit">Esci</button>
+        </form>
+      </div>
     {% endif %}
   </div>
 </div>
-<main class="p-4 md:p-8 max-w-7xl mx-auto">
+<main class="p-4 md:p-8 max-w-7xl mx-auto w-full flex-1">
   {% if messages %}
     {% for message in messages %}
       <div class="alert alert-{{ message.tags|default:'info' }} mb-4">{{ message }}</div>
@@ -41,5 +39,8 @@
   {% endif %}
   {% block content %}{% endblock %}
 </main>
+<footer class="text-center text-xs opacity-40 py-4">
+  &copy; Iside Systems SRLS 2026 — per Mentor Ripetizioni
+</footer>
 </body>
 </html>

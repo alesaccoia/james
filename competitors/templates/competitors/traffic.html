@@ -20,9 +20,9 @@
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
     <div class="join" id="mode-tabs">
-      <button class="btn btn-sm join-item" data-m="visits">Visite</button>
-      <button class="btn btn-sm join-item" data-m="log">Visite (scala log)</button>
-      <button class="btn btn-sm join-item" data-m="share">Quota %</button>
+      <button class="btn btn-sm join-item" data-m="visits">Colonne</button>
+      <button class="btn btn-sm join-item" data-m="share100">Colonne impilate al 100%</button>
+      <button class="btn btn-sm join-item" data-m="log">Scala log</button>
     </div>
   </div>
 
@@ -81,7 +81,8 @@ function renderChart() {
   const cell = {};
   ROWS.forEach(r => { cell[r.month + "|" + r.label] = (cell[r.month + "|" + r.label] || 0) + r.visits; });
 
-  const isShare = mode === "share";
+  const isShare = mode === "share100";
+  const isLog = mode === "log";
   const monthTotal = {};
   if (isShare) months.forEach(m => { monthTotal[m] = labels.reduce((s, l) => s + (cell[m + "|" + l] || 0), 0); });
 
@@ -89,22 +90,23 @@ function renderChart() {
     label: l,
     data: months.map(m => {
       const v = cell[m + "|" + l];
-      if (v == null) return null;
+      if (v == null) return isShare ? 0 : null;
       return isShare ? (monthTotal[m] ? (v / monthTotal[m] * 100) : 0) : v;
     }),
-    borderColor: colorOf(labels, l), backgroundColor: colorOf(labels, l),
-    borderWidth: 2, pointRadius: 3, spanGaps: true, tension: .2,
+    backgroundColor: colorOf(labels, l),
+    borderRadius: isShare ? 0 : 3,
   }));
 
   chart = new Chart($("chart-traffic"), {
-    type: "line",
+    type: "bar",
     data: { labels: months, datasets },
     options: {
       maintainAspectRatio: false,
       scales: {
-        x: { grid: { color: "#e5e7eb" } },
+        x: { stacked: isShare, grid: { color: "#e5e7eb" } },
         y: {
-          type: mode === "log" ? "logarithmic" : "linear",
+          stacked: isShare,
+          type: isLog ? "logarithmic" : "linear",
           grid: { color: "#e5e7eb" },
           ticks: { callback: v => isShare ? v + "%" : fmtN.format(v) },
         },
