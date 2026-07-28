@@ -83,6 +83,7 @@ const fmtByUnit = (v, unit) => {
 let STAGES = [];
 let KPI_DEFS = {};   // key -> {label, stage, unit, target_value, series}
 let EVENTS = [];
+let EARLIEST_DATE = null;  // earliest date across every KPI's series, for the "Tutto" period
 let selected = new Set();
 let mode = "abs";       // abs | norm
 let period = 30;        // 7 | 30 | 90 | "all"
@@ -110,6 +111,26 @@ function bucketOf(dateStr) {
 
 function inPeriod(dateStr) {
   return period === "all" || dateStr >= daysAgo(period);
+}
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Every calendar day from start to end (inclusive), YYYY-MM-DD - the
+// continuous timeline the chart's x-axis is built from, so sparse KPIs
+// (e.g. "Clienti nuovi paganti", which only has a data point on days with
+// an actual conversion) don't get a straight line drawn across weeks of
+// nothing happening.
+function allDaysInRange(startStr, endStr) {
+  const days = [];
+  const d = new Date(startStr + "T00:00:00Z");
+  const end = new Date(endStr + "T00:00:00Z");
+  while (d <= end) {
+    days.push(d.toISOString().slice(0, 10));
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return days;
 }
 
 // count-type KPIs (leads, clients...) are summed per bucket; eur/percent/ratio
@@ -180,25 +201,34 @@ function renderChart() {
     return;
   }
 
+  // Continuous timeline for the period: every day from the period start (or
+  // the earliest data point on file, for "Tutto") to today, then bucketed.
+  // This is the x-axis regardless of which KPIs happen to have data where -
+  // otherwise a sparse KPI (e.g. only has points on days something actually
+  // happened) would make the chart skip straight from one event to the next.
+  const rangeStart = period === "all" ? (EARLIEST_DATE || todayStr()) : daysAgo(period);
+  const buckets = [...new Set(allDaysInRange(rangeStart, todayStr()).map(bucketOf))].sort();
+
   // Per KPI: filter by period, then bucket by day/week/month.
   const bucketedByKey = {};
-  const allBuckets = new Set();
   keys.forEach(k => {
     const def = KPI_DEFS[k];
     const byBucket = {};
     (def.series || []).filter(p => inPeriod(p.date)).forEach(p => {
       const b = bucketOf(p.date);
       (byBucket[b] = byBucket[b] || []).push(p.value);
-      allBuckets.add(b);
     });
     bucketedByKey[k] = Object.fromEntries(
       Object.entries(byBucket).map(([b, vals]) => [b, bucketAggregate(def.unit, vals)]));
   });
-  const buckets = [...allBuckets].sort();
 
   const datasets = keys.map(k => {
     const def = KPI_DEFS[k];
-    const absValues = buckets.map(b => bucketedByKey[k][b] ?? null);
+    // count-type KPIs (leads, clients acquired...) default missing buckets to
+    // 0 - no event that day genuinely means zero. Ratio/currency KPIs (CPL,
+    // CAC...) stay as a gap - "no data" isn't the same as "zero cost".
+    const zeroFill = def.unit === "count" ? 0 : null;
+    const absValues = buckets.map(b => bucketedByKey[k][b] ?? zeroFill);
     let values = absValues;
     if (mode === "norm") {
       const max = Math.max(...absValues.filter(v => v != null), 0) || 1;
@@ -208,7 +238,7 @@ function renderChart() {
       label: `${def.stage} · ${def.label}`,
       data: values, _abs: absValues, _unit: def.unit,
       borderColor: colorOf(k), backgroundColor: colorOf(k),
-      borderWidth: 2, pointRadius: 2, tension: .25, spanGaps: true,
+      borderWidth: 2, pointRadius: 2, tension: .25, spanGaps: def.unit !== "count",
     };
   });
 
@@ -348,9 +378,13 @@ async function load() {
     const json = await r.json();
     STAGES = json.stages || [];
     KPI_DEFS = {};
+    EARLIEST_DATE = null;
     STAGES.forEach(stage => stage.kpis.forEach(kpi => {
       KPI_DEFS[keyOf(kpi)] = { label: kpi.name, stage: stage.name, unit: kpi.unit,
                                target_value: kpi.target_value, series: kpi.series };
+      (kpi.series || []).forEach(p => {
+        if (!EARLIEST_DATE || p.date < EARLIEST_DATE) EARLIEST_DATE = p.date;
+      });
     }));
     if (!STAGES.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
     $("empty-state").classList.add("hidden");
