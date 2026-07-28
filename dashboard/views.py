@@ -347,7 +347,7 @@ def event_delete(request, pk):
 
 # --------------------------------------------------------------- Funnel
 
-def _client_acquired_series():
+def _client_acquired_series(stage):
     """Daily count of leads that reached client_acquired, from the wundt
     lead status event log (mentor_lead_status_events, via Airbyte)."""
     totals = defaultdict(int)
@@ -361,11 +361,52 @@ def _client_acquired_series():
     return [{'date': d, 'value': v} for d, v in sorted(totals.items())]
 
 
+def _campaign_names_for_stage(stage):
+    return {s.name for s in stage.sources.all() if s.kind == 'campaign'}
+
+
+def _fb_rows_for_campaigns(campaign_names):
+    if not campaign_names:
+        return []
+    return [d for d in _stream_rows('fb_ads_insights') if d.get('campaign_name') in campaign_names]
+
+
+def _leads_from_campaigns_series(stage):
+    """Daily Meta leads (Instant Form) summed across the campaigns tagged
+    onto this stage via FunnelStageSource."""
+    totals = defaultdict(float)
+    for d in _fb_rows_for_campaigns(_campaign_names_for_stage(stage)):
+        date = str(d.get('date_start') or '')[:10]
+        if not date:
+            continue
+        totals[date] += _fb_action_value(d, 'lead')
+    return [{'date': d, 'value': v} for d, v in sorted(totals.items())]
+
+
+def _cpl_from_campaigns_series(stage):
+    """Daily cost per lead (spend / leads) across the campaigns tagged onto
+    this stage. Days with no leads are skipped (division by zero)."""
+    spend, leads = defaultdict(float), defaultdict(float)
+    for d in _fb_rows_for_campaigns(_campaign_names_for_stage(stage)):
+        date = str(d.get('date_start') or '')[:10]
+        if not date:
+            continue
+        spend[date] += _num(d.get('spend'))
+        leads[date] += _fb_action_value(d, 'lead')
+    return [{'date': d, 'value': spend[d] / leads[d]} for d in sorted(spend) if leads[d]]
+
+
 # Funnel KPIs computed from real Airbyte data instead of manual entry, keyed
-# by (stage slug, KPI name) as seeded in migration 0005_seed_default_funnel.
+# by KPI name (matched within whatever stage it's defined on, using that
+# stage's own campaign associations from FunnelStageSource where relevant).
 # Add an entry here whenever another KPI gets a real data source wired up.
+# Not every KPI can be computed this way yet - e.g. "Tasso di contatto" and
+# "Booking rate" would need per-lead campaign attribution on the wundt side,
+# which isn't captured today (lead.extra is empty), so those stay manual.
 FUNNEL_COMPUTED_KPIS = {
-    ('conversion', 'Clienti nuovi paganti'): _client_acquired_series,
+    'Clienti nuovi paganti': _client_acquired_series,
+    'Lead validi': _leads_from_campaigns_series,
+    'CPL': _cpl_from_campaigns_series,
 }
 
 
@@ -384,9 +425,9 @@ def data_funnel(request):
     for stage in FunnelStage.objects.filter(is_active=True).prefetch_related('kpis__values', 'sources'):
         kpis = []
         for kpi in stage.kpis.filter(is_active=True):
-            computed_fn = FUNNEL_COMPUTED_KPIS.get((stage.slug, kpi.name))
+            computed_fn = FUNNEL_COMPUTED_KPIS.get(kpi.name)
             if computed_fn:
-                series, computed = computed_fn(), True
+                series, computed = computed_fn(stage), True
             else:
                 series = [{'date': v.date.isoformat(), 'value': v.value, 'note': v.note}
                          for v in sorted(kpi.values.all(), key=lambda v: v.date)]
