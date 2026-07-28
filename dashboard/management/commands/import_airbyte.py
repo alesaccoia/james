@@ -33,6 +33,18 @@ NATURAL_KEYS = {
     'fb_ad_creatives': lambda d: d.get('id'),
     'fb_ad_account': lambda d: d.get('id') or d.get('account_id'),
     'fb_custom_conversions': lambda d: d.get('id'),
+    'ga_website_overview': lambda d: d.get('date'),
+    'ga_conversions_report': lambda d: f"{d.get('date')}|{d.get('eventName')}",
+    'ga_pages_path_report': lambda d: f"{d.get('date')}|{d.get('pagePath')}",
+    'ga_traffic_acquisition_session_campaign_report': lambda d: f"{d.get('date')}|{d.get('sessionCampaignName')}",
+    'ga_traffic_acquisition_session_default_channel_grouping_report':
+        lambda d: f"{d.get('date')}|{d.get('sessionDefaultChannelGrouping')}",
+    'ga_user_acquisition_first_user_source_medium_report':
+        lambda d: f"{d.get('date')}|{d.get('firstUserSource')}|{d.get('firstUserMedium')}",
+    'ga_demographic_age_report': lambda d: f"{d.get('date')}|{d.get('userAgeBracket')}",
+    'ga_demographic_gender_report': lambda d: f"{d.get('date')}|{d.get('userGender')}",
+    'ga_demographic_country_report': lambda d: f"{d.get('date')}|{d.get('country')}",
+    'ga_demographic_city_report': lambda d: f"{d.get('date')}|{d.get('city')}",
 }
 
 META_COLS = {'_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_meta', '_airbyte_generation_id'}
