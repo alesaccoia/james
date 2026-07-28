@@ -114,18 +114,24 @@ class FunnelKPIValue(models.Model):
 
 class FunnelStageSource(models.Model):
     """Associates a funnel stage with something that feeds it — a Meta
-    campaign, an ad set, a GA4 channel, named freely with their real names.
-    Not wired to automatic calculation yet (see FunnelKPIValue) — this just
-    records the mapping so it's there when that gets built."""
+    campaign, ad set or ad (linked by real Meta id, so stats can be pulled
+    straight from fb_ads_insights by campaign_id/adset_id/ad_id), a GA4
+    channel, or anything else named freely. Powers the per-stage campaign
+    breakdown and the computed KPIs in views.py (FUNNEL_COMPUTED_KPIS)."""
     KIND_CHOICES = [
         ('campaign', 'Campagna'),
         ('ad_set', 'Ad set'),
+        ('ad', 'Ad'),
         ('channel', 'Canale'),
         ('other', 'Altro'),
     ]
     stage = models.ForeignKey(FunnelStage, on_delete=models.CASCADE, related_name='sources')
     kind = models.CharField(max_length=20, choices=KIND_CHOICES, default='campaign')
     name = models.CharField(max_length=200)
+    external_id = models.CharField(
+        max_length=100, blank=True, db_index=True,
+        help_text='ID Meta reale (campaign_id / adset_id / ad_id) per collegare le statistiche esatte. '
+                  'Vuoto per voci non Meta (es. "Altro").')
     notes = models.CharField(max_length=300, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

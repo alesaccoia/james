@@ -6,8 +6,10 @@
 <div class="flex flex-wrap items-center gap-3 mb-6">
   <div>
     <h1 class="text-2xl font-bold">Funnel di marketing</h1>
-    <p class="text-sm opacity-60">Fasi, KPI e la loro evoluzione nel tempo. Le fasi e i KPI si gestiscono da <a class="link" href="/admin/dashboard/funnelstage/">Admin</a> — questa pagina serve a vederne l'andamento.</p>
+    <p class="text-sm opacity-60">Fasi, KPI e la loro evoluzione nel tempo. Le fasi, i KPI e le campagne collegate si gestiscono da <a class="link" href="/admin/dashboard/funnelstage/">Admin</a> — questa pagina serve a vederne l'andamento.</p>
   </div>
+  <div class="grow"></div>
+  <div class="badge badge-lg badge-outline" id="pill-range">periodo: —</div>
 </div>
 
 <div id="empty-state" class="hidden alert shadow-lg mb-6">
@@ -19,6 +21,12 @@
   <div class="divider">Evoluzione nel tempo</div>
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="tabs tabs-boxed" id="period-tabs"></div>
+    <div class="join">
+      <button class="btn btn-xs join-item" data-g="day">Giorno</button>
+      <button class="btn btn-xs join-item" data-g="week">Settimana</button>
+      <button class="btn btn-xs join-item" data-g="month">Mese</button>
+    </div>
     <div class="join">
       <button class="btn btn-sm join-item" id="btn-mode-abs">Valori assoluti</button>
       <button class="btn btn-sm join-item" id="btn-mode-norm">Normalizzato (indice 100)</button>
@@ -63,6 +71,7 @@ const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171
 const $ = (id) => document.getElementById(id);
 const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 2 });
 const fmtEUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const fmtEURc = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (v) => v == null ? "—" : fmtN.format(v);
 const fmtByUnit = (v, unit) => {
   if (v == null) return "—";
@@ -75,11 +84,43 @@ let STAGES = [];
 let KPI_DEFS = {};   // key -> {label, stage, unit, target_value, series}
 let EVENTS = [];
 let selected = new Set();
-let mode = "abs"; // abs | norm
+let mode = "abs";       // abs | norm
+let period = 30;        // 7 | 30 | 90 | "all"
+let groupBy = "day";    // day | week | month
 let chart = null;
 
 const keyOf = (kpi) => "k" + kpi.id;
 const colorOf = (key) => PALETTE[Object.keys(KPI_DEFS).indexOf(key) % PALETTE.length];
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function bucketOf(dateStr) {
+  if (groupBy === "day") return dateStr;
+  if (groupBy === "month") return dateStr.slice(0, 7);
+  const d = new Date(dateStr + "T00:00:00Z");
+  const day = d.getUTCDay();
+  d.setUTCDate(d.getUTCDate() + ((day === 0 ? -6 : 1) - day)); // back to Monday
+  return d.toISOString().slice(0, 10);
+}
+
+function inPeriod(dateStr) {
+  return period === "all" || dateStr >= daysAgo(period);
+}
+
+// count-type KPIs (leads, clients...) are summed per bucket; eur/percent/ratio
+// KPIs in this app are all cost-per-X or rate-type ratios (CPL, CAC, tassi...),
+// so they're averaged per bucket instead of summed (summing a ratio across a
+// week produces a meaningless inflated number).
+function bucketAggregate(unit, values) {
+  if (!values.length) return null;
+  if (unit === "count") return values.reduce((s, v) => s + v, 0);
+  return values.reduce((s, v) => s + v, 0) / values.length;
+}
 
 function renderModeButtons() {
   $("btn-mode-abs").classList.toggle("btn-active", mode === "abs");
@@ -88,6 +129,22 @@ function renderModeButtons() {
 $("btn-mode-abs").onclick = () => { mode = "abs"; renderChart(); };
 $("btn-mode-norm").onclick = () => { mode = "norm"; renderChart(); };
 $("chk-events").addEventListener("change", renderChart);
+
+function renderPeriodTabs() {
+  const tabs = [[7, "7 giorni"], [30, "30 giorni"], [90, "90 giorni"], ["all", "Tutto"]];
+  $("period-tabs").innerHTML = tabs.map(([v, l]) =>
+    `<a class="tab ${v === period ? "tab-active" : ""}" data-v="${v}">${l}</a>`).join("");
+  $("period-tabs").querySelectorAll("a").forEach(b =>
+    b.onclick = () => { period = b.dataset.v === "all" ? "all" : Number(b.dataset.v); renderAll(); });
+  $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
+}
+
+function renderGroupTabs() {
+  document.querySelectorAll("[data-g]").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.g === groupBy);
+    b.onclick = () => { groupBy = b.dataset.g; renderGroupTabs(); renderChart(); renderStageCards(); };
+  });
+}
 
 function renderPicker() {
   let html = "";
@@ -122,14 +179,26 @@ function renderChart() {
     $("chart-hint").textContent = "Seleziona almeno un KPI a sinistra.";
     return;
   }
-  const allDates = new Set();
-  keys.forEach(k => (KPI_DEFS[k].series || []).forEach(p => allDates.add(p.date)));
-  const dates = [...allDates].sort();
+
+  // Per KPI: filter by period, then bucket by day/week/month.
+  const bucketedByKey = {};
+  const allBuckets = new Set();
+  keys.forEach(k => {
+    const def = KPI_DEFS[k];
+    const byBucket = {};
+    (def.series || []).filter(p => inPeriod(p.date)).forEach(p => {
+      const b = bucketOf(p.date);
+      (byBucket[b] = byBucket[b] || []).push(p.value);
+      allBuckets.add(b);
+    });
+    bucketedByKey[k] = Object.fromEntries(
+      Object.entries(byBucket).map(([b, vals]) => [b, bucketAggregate(def.unit, vals)]));
+  });
+  const buckets = [...allBuckets].sort();
 
   const datasets = keys.map(k => {
     const def = KPI_DEFS[k];
-    const byDate = Object.fromEntries((def.series || []).map(p => [p.date, p.value]));
-    const absValues = dates.map(d => byDate[d] ?? null);
+    const absValues = buckets.map(b => bucketedByKey[k][b] ?? null);
     let values = absValues;
     if (mode === "norm") {
       const max = Math.max(...absValues.filter(v => v != null), 0) || 1;
@@ -149,7 +218,7 @@ function renderChart() {
 
   chart = new Chart($("chart-funnel"), {
     type: "line",
-    data: { labels: dates, datasets },
+    data: { labels: buckets, datasets },
     options: {
       maintainAspectRatio: false,
       scales: {
@@ -162,10 +231,44 @@ function renderChart() {
           const abs = fmtByUnit(ctx.dataset._abs[ctx.dataIndex], ctx.dataset._unit);
           return mode === "norm" ? ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}% (${abs})` : ` ${ctx.dataset.label}: ${abs}`;
         } } },
-        ...($("chk-events").checked ? { annotation: { annotations: MarketingEvents.annotations(EVENTS, dates) } } : {}),
+        ...($("chk-events").checked ? { annotation: { annotations: MarketingEvents.annotations(EVENTS, buckets) } } : {}),
       },
     },
   });
+}
+
+function renderCampaignTable(stage) {
+  const rows = (stage.campaign_rows || []).filter(r => inPeriod(r.date));
+  if (!rows.length) return "";
+  const bySource = {};
+  rows.forEach(r => {
+    const key = r.source_id;
+    const acc = bySource[key] = bySource[key] || { source: r.source, kind: r.kind, spend: 0, leads: 0 };
+    acc.spend += r.spend;
+    acc.leads += r.leads;
+  });
+  const list = Object.values(bySource).sort((a, b) => b.spend - a.spend);
+  const kindLabel = { campaign: "Campagna", ad_set: "Ad set", ad: "Ad" };
+  const body = list.map(s => {
+    const cpl = s.leads ? s.spend / s.leads : null;
+    return `<tr>
+      <td><span class="badge badge-ghost badge-sm">${kindLabel[s.kind] || s.kind}</span></td>
+      <td>${s.source}</td>
+      <td class="text-right">${fmtEUR.format(s.spend)}</td>
+      <td class="text-right">${fmt(s.leads)}</td>
+      <td class="text-right">${cpl == null ? "—" : fmtEURc.format(cpl)}</td>
+    </tr>`;
+  }).join("");
+  return `
+    <div class="mt-4">
+      <div class="text-xs font-semibold opacity-60 mb-1">Per campagna (periodo selezionato)</div>
+      <div class="overflow-x-auto">
+        <table class="table table-xs">
+          <thead><tr><th></th><th>nome</th><th class="text-right">spesa</th><th class="text-right">lead</th><th class="text-right">cpl</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 function renderStageCards() {
@@ -196,9 +299,16 @@ function renderStageCards() {
               <tbody>${kpiRows || '<tr><td colspan="4" class="opacity-50">nessun KPI in questa fase</td></tr>'}</tbody>
             </table>
           </div>
+          ${renderCampaignTable(stage)}
         </div>
       </div>`;
   }).join("");
+}
+
+function renderAll() {
+  renderPeriodTabs();
+  renderChart();
+  renderStageCards();
 }
 
 async function load() {
@@ -218,8 +328,8 @@ async function load() {
     selected = new Set(Object.keys(KPI_DEFS).slice(0, 3));
     EVENTS = await MarketingEvents.load();
     renderPicker();
-    renderChart();
-    renderStageCards();
+    renderGroupTabs();
+    renderAll();
   } catch {
     $("empty-state").classList.remove("hidden");
     $("content").classList.add("hidden");

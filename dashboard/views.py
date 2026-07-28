@@ -347,7 +347,7 @@ def event_delete(request, pk):
 
 # --------------------------------------------------------------- Funnel
 
-def _client_acquired_series(stage):
+def _client_acquired_series():
     """Daily count of leads that reached client_acquired, from the wundt
     lead status event log (mentor_lead_status_events, via Airbyte)."""
     totals = defaultdict(int)
@@ -361,52 +361,71 @@ def _client_acquired_series(stage):
     return [{'date': d, 'value': v} for d, v in sorted(totals.items())]
 
 
-def _campaign_names_for_stage(stage):
-    return {s.name for s in stage.sources.all() if s.kind == 'campaign'}
+# FunnelStageSource.kind -> the matching id/name fields on fb_ads_insights.
+FB_INSIGHT_ID_FIELD = {'campaign': 'campaign_id', 'ad_set': 'adset_id', 'ad': 'ad_id'}
+FB_INSIGHT_NAME_FIELD = {'campaign': 'campaign_name', 'ad_set': 'adset_name', 'ad': 'ad_name'}
 
 
-def _fb_rows_for_campaigns(campaign_names):
-    if not campaign_names:
+def _fb_insight_rows_for_source(source, insight_rows):
+    """Rows from a pre-fetched fb_ads_insights list matching one
+    FunnelStageSource — by Meta id when linked (exact), else by name
+    (fallback for sources set up before external_id existed)."""
+    id_field = FB_INSIGHT_ID_FIELD.get(source.kind)
+    if not id_field:
         return []
-    return [d for d in _stream_rows('fb_ads_insights') if d.get('campaign_name') in campaign_names]
+    if source.external_id:
+        return [d for d in insight_rows if str(d.get(id_field) or '') == source.external_id]
+    name_field = FB_INSIGHT_NAME_FIELD[source.kind]
+    return [d for d in insight_rows if d.get(name_field) == source.name]
 
 
-def _leads_from_campaigns_series(stage):
-    """Daily Meta leads (Instant Form) summed across the campaigns tagged
-    onto this stage via FunnelStageSource."""
+def _stage_campaign_rows(stage):
+    """Flat per-source, per-day rows (source name/kind, date, spend, leads)
+    for every Meta campaign/ad set/ad tagged onto this stage. Raw material
+    for both the computed KPIs below and the per-campaign breakdown table —
+    left unaggregated so the frontend can bucket/filter it by period and by
+    day/week/month itself, the same way the Meta Ads page does."""
+    insight_rows = list(_stream_rows('fb_ads_insights'))
+    by_key = {}
+    for source in stage.sources.all():
+        for d in _fb_insight_rows_for_source(source, insight_rows):
+            date = str(d.get('date_start') or '')[:10]
+            if not date:
+                continue
+            key = (source.pk, date)
+            row = by_key.setdefault(key, {'source': source.name, 'kind': source.kind,
+                                          'source_id': source.pk, 'date': date,
+                                          'spend': 0.0, 'leads': 0.0})
+            row['spend'] += _num(d.get('spend'))
+            row['leads'] += _fb_action_value(d, 'lead')
+    return sorted(by_key.values(), key=lambda r: (r['date'], r['source']))
+
+
+def _leads_series_from_rows(campaign_rows):
     totals = defaultdict(float)
-    for d in _fb_rows_for_campaigns(_campaign_names_for_stage(stage)):
-        date = str(d.get('date_start') or '')[:10]
-        if not date:
-            continue
-        totals[date] += _fb_action_value(d, 'lead')
+    for r in campaign_rows:
+        totals[r['date']] += r['leads']
     return [{'date': d, 'value': v} for d, v in sorted(totals.items())]
 
 
-def _cpl_from_campaigns_series(stage):
-    """Daily cost per lead (spend / leads) across the campaigns tagged onto
-    this stage. Days with no leads are skipped (division by zero)."""
+def _cpl_series_from_rows(campaign_rows):
     spend, leads = defaultdict(float), defaultdict(float)
-    for d in _fb_rows_for_campaigns(_campaign_names_for_stage(stage)):
-        date = str(d.get('date_start') or '')[:10]
-        if not date:
-            continue
-        spend[date] += _num(d.get('spend'))
-        leads[date] += _fb_action_value(d, 'lead')
+    for r in campaign_rows:
+        spend[r['date']] += r['spend']
+        leads[r['date']] += r['leads']
     return [{'date': d, 'value': spend[d] / leads[d]} for d in sorted(spend) if leads[d]]
 
 
 # Funnel KPIs computed from real Airbyte data instead of manual entry, keyed
-# by KPI name (matched within whatever stage it's defined on, using that
-# stage's own campaign associations from FunnelStageSource where relevant).
-# Add an entry here whenever another KPI gets a real data source wired up.
-# Not every KPI can be computed this way yet - e.g. "Tasso di contatto" and
-# "Booking rate" would need per-lead campaign attribution on the wundt side,
-# which isn't captured today (lead.extra is empty), so those stay manual.
+# by KPI name (matched within whatever stage it's defined on). Add an entry
+# here whenever another KPI gets a real data source wired up. Not every KPI
+# can be computed this way yet - e.g. "Tasso di contatto" and "Booking rate"
+# would need per-lead campaign attribution on the wundt side, which isn't
+# captured today (lead.extra is empty), so those stay manual.
 FUNNEL_COMPUTED_KPIS = {
-    'Clienti nuovi paganti': _client_acquired_series,
-    'Lead validi': _leads_from_campaigns_series,
-    'CPL': _cpl_from_campaigns_series,
+    'Clienti nuovi paganti': lambda campaign_rows: _client_acquired_series(),
+    'Lead validi': _leads_series_from_rows,
+    'CPL': _cpl_series_from_rows,
 }
 
 
@@ -423,11 +442,12 @@ def funnel(request):
 def data_funnel(request):
     stages = []
     for stage in FunnelStage.objects.filter(is_active=True).prefetch_related('kpis__values', 'sources'):
+        campaign_rows = _stage_campaign_rows(stage)
         kpis = []
         for kpi in stage.kpis.filter(is_active=True):
             computed_fn = FUNNEL_COMPUTED_KPIS.get(kpi.name)
             if computed_fn:
-                series, computed = computed_fn(stage), True
+                series, computed = computed_fn(campaign_rows), True
             else:
                 series = [{'date': v.date.isoformat(), 'value': v.value, 'note': v.note}
                          for v in sorted(kpi.values.all(), key=lambda v: v.date)]
@@ -446,8 +466,10 @@ def data_funnel(request):
             'slug': stage.slug,
             'description': stage.description,
             'kpis': kpis,
-            'sources': [{'kind': s.kind, 'kind_label': s.get_kind_display(), 'name': s.name}
+            'sources': [{'kind': s.kind, 'kind_label': s.get_kind_display(),
+                        'name': s.name, 'external_id': s.external_id}
                        for s in stage.sources.all()],
+            'campaign_rows': campaign_rows,
         })
     return JsonResponse({'stages': stages})
 
