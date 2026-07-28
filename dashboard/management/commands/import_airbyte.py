@@ -95,7 +95,7 @@ class Command(BaseCommand):
                         seen += 1
                         data = {c: _jsonable(row[columns.index(c)]) for c in data_cols}
                         natural = key_fn(data) if key_fn else None
-                        ab_id = str(natural) if natural else str(row[id_idx])
+                        ab_id = (str(natural) if natural else str(row[id_idx]))[:300]
                         if ab_id in existing:
                             continue
                         ts = row[ts_idx] if ts_idx is not None else None

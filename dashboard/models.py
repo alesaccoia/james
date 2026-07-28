@@ -31,7 +31,7 @@ class AirbyteRecord(models.Model):
     """
     stream = models.CharField(max_length=200, db_index=True,
                               help_text='Prefixed stream name, e.g. "fb_ads_insights".')
-    ab_id = models.CharField(max_length=64)
+    ab_id = models.CharField(max_length=300)
     emitted_at = models.DateTimeField(null=True, blank=True, db_index=True)
     data = models.JSONField(default=dict, blank=True)
     imported_at = models.DateTimeField(auto_now_add=True)
@@ -53,7 +53,7 @@ class MarketingEvent(models.Model):
     date = models.DateField(db_index=True)
     scope = models.CharField(
         max_length=200, blank=True,
-        help_text='Free text — e.g. "meta", "google, sito", "landing". Used to filter which charts show this event.')
+        help_text='Free text reference only — e.g. "meta", "google, sito", "landing". Shown on every chart, does not filter.')
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
