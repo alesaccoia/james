@@ -24,14 +24,37 @@
     <label class="flex items-center gap-2 text-sm">canale
       <select id="f-channel" class="select select-bordered select-sm"><option value="">tutti</option></select>
     </label>
+    <details class="dropdown">
+      <summary class="btn btn-sm">Campagne: <span id="campaign-picker-label">tutte</span></summary>
+      <div class="dropdown-content menu bg-base-100 rounded-box shadow p-3 w-72 max-h-80 overflow-y-auto z-20 border border-base-200">
+        <input type="text" id="f-campaign-search" placeholder="cerca…" class="input input-bordered input-sm w-full mb-2">
+        <div id="campaign-checklist" class="flex flex-col gap-1 text-sm"></div>
+      </div>
+    </details>
   </div>
 
   <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="kpis"></div>
 
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">
-      <h2 class="card-title">Spesa e click nel tempo</h2>
-      <p class="text-sm opacity-60">Somma giornaliera per canale, nel periodo selezionato.</p>
+      <h2 class="card-title">Andamento nel tempo</h2>
+      <div class="flex flex-wrap items-center gap-4 mb-1">
+        <div id="metric-picker" class="flex flex-wrap gap-3"></div>
+        <div class="grow"></div>
+        <div class="join">
+          <button class="btn btn-xs join-item" data-g="day">Giorno</button>
+          <button class="btn btn-xs join-item" data-g="week">Settimana</button>
+          <button class="btn btn-xs join-item" data-g="month">Mese</button>
+        </div>
+        <label class="label cursor-pointer gap-2">
+          <input type="checkbox" id="chk-normalize" class="checkbox checkbox-sm">
+          <span class="label-text text-sm">Normalizza</span>
+        </label>
+        <label class="label cursor-pointer gap-2">
+          <input type="checkbox" id="chk-events" class="checkbox checkbox-sm">
+          <span class="label-text text-sm">Mostra eventi</span>
+        </label>
+      </div>
       <div class="h-96 relative"><canvas id="chart-trend"></canvas></div>
     </div>
   </div>
@@ -39,7 +62,7 @@
   <div class="card bg-base-100 shadow">
     <div class="card-body">
       <h2 class="card-title">Campagne</h2>
-      <p class="text-sm opacity-60">Per il periodo selezionato, ordinate per spesa.</p>
+      <p class="text-sm opacity-60">Per il periodo (e le campagne) selezionate, ordinate per spesa.</p>
       <input type="text" id="f-text" placeholder="cerca campagna…" class="input input-bordered input-sm w-full max-w-xs mb-3">
       <div class="overflow-x-auto max-h-[480px]">
         <table class="table table-zebra table-pin-rows" id="campaign-table"></table>
@@ -57,16 +80,29 @@
 
 const DATA_URL = MKT_CFG.data_url;
 const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171", "#2dd4bf", "#fb923c"];
+const METRIC_DEFS = {
+  spend: { label: "Spesa", color: PALETTE[0], unit: "eur" },
+  impressions: { label: "Impression", color: PALETTE[1], unit: "count" },
+  clicks: { label: "Click", color: PALETTE[2], unit: "count" },
+  leads: { label: "Lead", color: PALETTE[3], unit: "count" },
+};
 
 const $ = (id) => document.getElementById(id);
 const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 2 });
 const fmtEUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
 const fmtEURc = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (v) => v == null ? "—" : fmtN.format(v);
+const fmtByUnit = (v, unit) => unit === "eur" ? fmtEUR.format(v) : fmt(v);
 
 let ROWS = [];
+let EVENTS = [];
 let CHANNELS = [];
+let CAMPAIGNS = [];
+let selectedCampaigns = new Set();
+let selectedMetrics = new Set(["spend"]);
 let period = 30;
+let groupBy = "day";
+let normalize = false;
 let chart = null;
 
 function daysAgo(n) {
@@ -76,10 +112,22 @@ function daysAgo(n) {
   return d.toISOString().slice(0, 10);
 }
 
+function bucketOf(dateStr) {
+  if (groupBy === "day") return dateStr;
+  if (groupBy === "month") return dateStr.slice(0, 7);
+  const d = new Date(dateStr + "T00:00:00Z");
+  const day = d.getUTCDay();
+  d.setUTCDate(d.getUTCDate() + ((day === 0 ? -6 : 1) - day)); // back to Monday
+  return d.toISOString().slice(0, 10);
+}
+
 function filteredRows() {
   const ch = $("f-channel").value;
   const since = period === "all" ? null : daysAgo(period);
-  return ROWS.filter(r => (!since || r.date >= since) && (!ch || r.channel === ch));
+  return ROWS.filter(r =>
+    (!since || r.date >= since) &&
+    (!ch || r.channel === ch) &&
+    (selectedCampaigns.size === 0 || selectedCampaigns.has(r.campaign)));
 }
 
 function colorOf(name) {
@@ -93,6 +141,44 @@ function renderPeriodTabs() {
     `<a class="tab ${v === period ? "tab-active" : ""}" data-v="${v}">${l}</a>`).join("");
   $("period-tabs").querySelectorAll("a").forEach(b =>
     b.onclick = () => { period = b.dataset.v === "all" ? "all" : Number(b.dataset.v); renderAll(); });
+}
+
+function renderGroupTabs() {
+  document.querySelectorAll("[data-g]").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.g === groupBy);
+    b.onclick = () => { groupBy = b.dataset.g; renderGroupTabs(); renderChart(); };
+  });
+}
+
+function renderMetricPicker() {
+  $("metric-picker").innerHTML = Object.entries(METRIC_DEFS).map(([k, d]) => `
+    <label class="label cursor-pointer gap-2 py-0">
+      <input type="checkbox" class="checkbox checkbox-sm" data-m="${k}" ${selectedMetrics.has(k) ? "checked" : ""} style="accent-color:${d.color}">
+      <span class="label-text text-sm">${d.label}</span>
+    </label>`).join("");
+  $("metric-picker").querySelectorAll("input").forEach(cb => {
+    cb.onchange = () => {
+      if (cb.checked) selectedMetrics.add(cb.dataset.m); else selectedMetrics.delete(cb.dataset.m);
+      renderChart();
+    };
+  });
+}
+
+function renderCampaignPicker() {
+  const ft = $("f-campaign-search").value.toLowerCase();
+  const list = CAMPAIGNS.filter(c => !ft || c.toLowerCase().includes(ft));
+  $("campaign-checklist").innerHTML = list.map(c => `
+    <label class="label cursor-pointer justify-start gap-2 py-1">
+      <input type="checkbox" class="checkbox checkbox-xs" data-c="${c.replace(/"/g, '&quot;')}" ${selectedCampaigns.has(c) ? "checked" : ""}>
+      <span class="label-text text-xs">${c}</span>
+    </label>`).join("");
+  $("campaign-checklist").querySelectorAll("input").forEach(cb => {
+    cb.onchange = () => {
+      if (cb.checked) selectedCampaigns.add(cb.dataset.c); else selectedCampaigns.delete(cb.dataset.c);
+      $("campaign-picker-label").textContent = selectedCampaigns.size ? `${selectedCampaigns.size} selezionate` : "tutte";
+      renderAll();
+    };
+  });
 }
 
 function renderKPIs() {
@@ -124,31 +210,43 @@ function renderKPIs() {
 function renderChart() {
   if (chart) chart.destroy();
   const rows = filteredRows();
-  const dates = [...new Set(rows.map(r => r.date))].sort();
-  const byChannel = {};
-  rows.forEach(r => {
-    byChannel[r.channel] = byChannel[r.channel] || {};
-    byChannel[r.channel][r.date] = (byChannel[r.channel][r.date] || 0) + r.spend;
+  const buckets = [...new Set(rows.map(r => bucketOf(r.date)))].sort();
+  const metrics = [...selectedMetrics];
+  if (!metrics.length || !buckets.length) return;
+
+  const datasets = metrics.map(m => {
+    const byBucket = {};
+    rows.forEach(r => { byBucket[bucketOf(r.date)] = (byBucket[bucketOf(r.date)] || 0) + (r[m] || 0); });
+    let values = buckets.map(b => byBucket[b] || 0);
+    if (normalize) {
+      const max = Math.max(...values, 0) || 1;
+      values = values.map(v => (v / max) * 100);
+    }
+    return {
+      label: METRIC_DEFS[m].label,
+      data: values,
+      borderColor: METRIC_DEFS[m].color, backgroundColor: METRIC_DEFS[m].color,
+      borderWidth: 2, pointRadius: 2, tension: .25, fill: false,
+    };
   });
-  const datasets = Object.keys(byChannel).map(c => ({
-    label: c,
-    data: dates.map(d => byChannel[c][d] || 0),
-    borderColor: colorOf(c), backgroundColor: colorOf(c),
-    borderWidth: 2, pointRadius: 2, tension: .25, fill: false,
-  }));
 
   chart = new Chart($("chart-trend"), {
     type: "line",
-    data: { labels: dates, datasets },
+    data: { labels: buckets, datasets },
     options: {
       maintainAspectRatio: false,
       scales: {
         x: { grid: { color: "#e5e7eb" } },
-        y: { grid: { color: "#e5e7eb" }, ticks: { callback: v => fmtEUR.format(v) } },
+        y: { grid: { color: "#e5e7eb" }, ticks: { callback: v => normalize ? v + "%" : fmtN.format(v) } },
       },
       plugins: {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
-        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtEUR.format(ctx.parsed.y)}` } },
+        tooltip: { callbacks: { label: ctx => {
+          const m = metrics[ctx.datasetIndex];
+          const val = normalize ? fmtN.format(ctx.parsed.y) + "%" : fmtByUnit(ctx.parsed.y, METRIC_DEFS[m].unit);
+          return ` ${ctx.dataset.label}: ${val}`;
+        } } },
+        ...($("chk-events").checked ? { annotation: { annotations: MarketingEvents.annotations(EVENTS, buckets, "meta") } } : {}),
       },
     },
   });
@@ -190,6 +288,7 @@ function renderCampaignTable() {
 
 function renderAll() {
   renderPeriodTabs();
+  renderGroupTabs();
   $("f-channel").innerHTML = `<option value="">tutti</option>` +
     CHANNELS.map(c => `<option>${c}</option>`).join("");
   $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
@@ -200,6 +299,9 @@ function renderAll() {
 
 $("f-channel").addEventListener("change", renderAll);
 $("f-text").addEventListener("input", renderCampaignTable);
+$("f-campaign-search").addEventListener("input", renderCampaignPicker);
+$("chk-normalize").addEventListener("change", (e) => { normalize = e.target.checked; renderChart(); });
+$("chk-events").addEventListener("change", renderChart);
 $("btn-reload").onclick = load;
 
 async function load() {
@@ -208,11 +310,15 @@ async function load() {
     if (!r.ok) throw new Error(r.status);
     const json = await r.json();
     ROWS = json.rows || [];
+    EVENTS = await MarketingEvents.load();
     CHANNELS = [...new Set(ROWS.map(r => r.channel))];
+    CAMPAIGNS = [...new Set(ROWS.map(r => r.campaign))].sort();
     $("src-rows").textContent = ROWS.length;
     if (!ROWS.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
     $("empty-state").classList.add("hidden");
     $("content").classList.remove("hidden");
+    renderMetricPicker();
+    renderCampaignPicker();
     renderAll();
   } catch {
     $("empty-state").classList.remove("hidden");
