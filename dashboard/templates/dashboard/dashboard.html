@@ -101,8 +101,10 @@ function renderKPIs() {
   const spend = rows.reduce((s, r) => s + r.spend, 0);
   const impressions = rows.reduce((s, r) => s + r.impressions, 0);
   const clicks = rows.reduce((s, r) => s + r.clicks, 0);
+  const leads = rows.reduce((s, r) => s + (r.leads || 0), 0);
   const ctr = impressions ? (clicks / impressions * 100) : null;
   const cpc = clicks ? (spend / clicks) : null;
+  const cpl = leads ? (spend / leads) : null;
 
   const defs = [
     { name: "Spesa", val: fmtEUR.format(spend) },
@@ -110,6 +112,8 @@ function renderKPIs() {
     { name: "Click", val: fmt(clicks) },
     { name: "CTR medio", val: ctr == null ? "—" : fmt(ctr) + "%" },
     { name: "CPC medio", val: cpc == null ? "—" : fmtEURc.format(cpc) },
+    { name: "Lead (Instant Form)", val: fmt(leads) },
+    { name: "CPL medio", val: cpl == null ? "—" : fmtEURc.format(cpl) },
   ];
   $("kpis").innerHTML = defs.map(d => `
     <div class="stat">
@@ -157,15 +161,17 @@ function renderCampaignTable() {
   const byCampaign = {};
   rows.forEach(r => {
     const key = r.channel + "|" + r.campaign;
-    byCampaign[key] = byCampaign[key] || { channel: r.channel, campaign: r.campaign, spend: 0, impressions: 0, clicks: 0 };
+    byCampaign[key] = byCampaign[key] || { channel: r.channel, campaign: r.campaign, spend: 0, impressions: 0, clicks: 0, leads: 0 };
     byCampaign[key].spend += r.spend;
     byCampaign[key].impressions += r.impressions;
     byCampaign[key].clicks += r.clicks;
+    byCampaign[key].leads += r.leads || 0;
   });
   const list = Object.values(byCampaign).sort((a, b) => b.spend - a.spend);
   const body = list.map(c => {
     const ctr = c.impressions ? (c.clicks / c.impressions * 100) : null;
     const cpc = c.clicks ? (c.spend / c.clicks) : null;
+    const cpl = c.leads ? (c.spend / c.leads) : null;
     return `<tr>
       <td><span class="badge badge-ghost">${c.channel}</span></td>
       <td>${c.campaign}</td>
@@ -174,11 +180,13 @@ function renderCampaignTable() {
       <td class="text-right">${fmt(c.clicks)}</td>
       <td class="text-right">${ctr == null ? "—" : fmt(ctr) + "%"}</td>
       <td class="text-right">${cpc == null ? "—" : fmtEURc.format(cpc)}</td>
+      <td class="text-right">${fmt(c.leads)}</td>
+      <td class="text-right">${cpl == null ? "—" : fmtEURc.format(cpl)}</td>
     </tr>`;
   }).join("");
   $("campaign-table").innerHTML =
-    `<thead><tr><th>canale</th><th>campagna</th><th class="text-right">spesa</th><th class="text-right">impression</th><th class="text-right">click</th><th class="text-right">ctr</th><th class="text-right">cpc</th></tr></thead>
-     <tbody>${body || '<tr><td colspan="7" class="opacity-50">nessuna campagna nel periodo</td></tr>'}</tbody>`;
+    `<thead><tr><th>canale</th><th>campagna</th><th class="text-right">spesa</th><th class="text-right">impression</th><th class="text-right">click</th><th class="text-right">ctr</th><th class="text-right">cpc</th><th class="text-right">lead</th><th class="text-right">cpl</th></tr></thead>
+     <tbody>${body || '<tr><td colspan="9" class="opacity-50">nessuna campagna nel periodo</td></tr>'}</tbody>`;
 }
 
 function renderAll() {

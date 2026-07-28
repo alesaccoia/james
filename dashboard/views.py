@@ -31,6 +31,16 @@ def _num(v):
         return 0.0
 
 
+def _fb_action_value(data, action_type):
+    """Meta's ads_insights 'actions' field is a list of {action_type, value}
+    dicts — Instant Form leads show up there as action_type='lead', not as
+    its own column/stream."""
+    for a in (data.get('actions') or []):
+        if a.get('action_type') == action_type:
+            return _num(a.get('value'))
+    return 0.0
+
+
 def _ga_date(v):
     """GA4 dates come back as 'YYYYMMDD' strings."""
     v = str(v or '')
@@ -69,6 +79,7 @@ def data_marketing(request):
                 'spend': _num(data.get(cfg['spend'])),
                 'impressions': _num(data.get(cfg['impressions'])),
                 'clicks': _num(data.get(cfg['clicks'])),
+                'leads': _fb_action_value(data, 'lead'),
             })
     return JsonResponse({'rows': rows})
 
@@ -242,6 +253,16 @@ def _daily_series(stream, date_field, value_field, ga_dates=False, agg='sum'):
     return [{'date': d, 'value': totals[d]} for d in sorted(totals)]
 
 
+def _fb_lead_series():
+    totals = defaultdict(float)
+    for d in _stream_rows('fb_ads_insights'):
+        date = str(d.get('date_start') or '')[:10]
+        if not date:
+            continue
+        totals[date] += _fb_action_value(d, 'lead')
+    return [{'date': d, 'value': totals[d]} for d in sorted(totals)]
+
+
 def _event_series(event_name):
     totals = defaultdict(float)
     for d in _stream_rows('ga_conversions_report'):
@@ -267,6 +288,8 @@ def _build_metrics():
                             'series': _daily_series('fb_ads_insights', 'date_start', 'impressions')},
         'fb_clicks': {'label': 'Click Meta Ads', 'source': 'Meta Ads', 'unit': 'count',
                       'series': _daily_series('fb_ads_insights', 'date_start', 'clicks')},
+        'fb_leads': {'label': 'Lead Meta Ads (Instant Form)', 'source': 'Meta Ads', 'unit': 'count',
+                     'series': _fb_lead_series()},
         'ga_sessions': {'label': 'Sessioni sito', 'source': 'Google Analytics', 'unit': 'count',
                         'series': _daily_series('ga_website_overview', 'date', 'sessions', ga_dates=True)},
         'ga_users': {'label': 'Utenti totali', 'source': 'Google Analytics', 'unit': 'count',
