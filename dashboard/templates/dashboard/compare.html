@@ -25,6 +25,10 @@
       <button class="btn btn-sm join-item" id="btn-mode-abs">Valori assoluti</button>
       <button class="btn btn-sm join-item" id="btn-mode-norm">Normalizzato (indice 100)</button>
     </div>
+    <label class="label cursor-pointer gap-2">
+      <input type="checkbox" id="chk-events" class="checkbox checkbox-sm">
+      <span class="label-text text-sm">Mostra eventi</span>
+    </label>
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -55,7 +59,6 @@
 
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>const CMP_CFG = {{ cfg_json|safe }};</script>
 {% verbatim %}
 <script>
@@ -75,6 +78,7 @@ const METRIC_KEYS = Object.keys(METRIC_DEFS);
 const colorOf = (key) => PALETTE[METRIC_KEYS.indexOf(key) % PALETTE.length];
 
 let SERIES = {}; // key -> [{date, value}]
+let EVENTS = [];
 let selected = new Set(METRIC_KEYS.slice(0, 3));
 let period = 30;
 let mode = "abs"; // abs | norm
@@ -179,6 +183,7 @@ function renderChart() {
           const val = mode === "norm" ? fmtN.format(ctx.parsed.y) + "%" : fmtByUnit(ctx.parsed.y, def.unit);
           return ` ${ctx.dataset.label}: ${val}`;
         } } },
+        ...($("chk-events").checked ? { annotation: { annotations: MarketingEvents.annotations(EVENTS, dates) } } : {}),
       },
     },
   });
@@ -212,6 +217,7 @@ function renderAll() {
 }
 
 $("btn-reload").onclick = load;
+$("chk-events").addEventListener("change", renderChart);
 
 async function load() {
   try {
@@ -219,6 +225,7 @@ async function load() {
     if (!r.ok) throw new Error(r.status);
     const json = await r.json();
     SERIES = Object.fromEntries(Object.entries(json.metrics).map(([k, v]) => [k, v.series]));
+    EVENTS = await MarketingEvents.load();
     const hasAny = Object.values(SERIES).some(s => s.length);
     if (!hasAny) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
     $("empty-state").classList.add("hidden");

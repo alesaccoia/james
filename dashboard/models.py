@@ -42,3 +42,23 @@ class AirbyteRecord(models.Model):
 
     def __str__(self):
         return f'{self.stream} · {self.ab_id[:12]}'
+
+
+class MarketingEvent(models.Model):
+    """A marked moment worth annotating on charts — a campaign tweak, a
+    landing page change, a budget shift, anything experimental. Shown as a
+    vertical line (hidden by default) on time-series charts across the app.
+    """
+    name = models.CharField(max_length=200)
+    date = models.DateField(db_index=True)
+    scope = models.CharField(
+        max_length=200, blank=True,
+        help_text='Free text — e.g. "meta", "google, sito", "landing". Used to filter which charts show this event.')
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-date']
+
+    def __str__(self):
+        return f'{self.date} — {self.name}'

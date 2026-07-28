@@ -13,4 +13,7 @@ urlpatterns = [
 
     path('confronto/', views.compare, name='compare'),
     path('confronto/data.json', views.data_compare, name='data_compare'),
+
+    path('eventi/', views.events, name='events'),
+    path('eventi/data.json', views.data_events, name='data_events'),
 ]

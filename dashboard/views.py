@@ -1,12 +1,13 @@
 import json
 from collections import defaultdict
 
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.urls import reverse
 
-from .models import AirbyteRecord
+from .models import AirbyteRecord, MarketingEvent
 
 # One entry per Airbyte stream we know how to turn into marketing KPIs.
 # Add a new entry here whenever a new source (Google Ads, TikTok Ads,
@@ -321,3 +322,35 @@ def compare(request):
 def data_compare(request):
     metrics = _build_metrics()
     return JsonResponse({'metrics': metrics})
+
+
+# --------------------------------------------------------- Marketing events
+
+@login_required
+def events(request):
+    if request.method == 'POST':
+        name = (request.POST.get('name') or '').strip()
+        date = (request.POST.get('date') or '').strip()
+        scope = (request.POST.get('scope') or '').strip()
+        notes = (request.POST.get('notes') or '').strip()
+        if not name or not date:
+            messages.error(request, 'Nome e data sono obbligatori.')
+            return redirect('dashboard:events')
+        MarketingEvent.objects.create(name=name, date=date, scope=scope, notes=notes)
+        messages.success(request, f'Evento "{name}" aggiunto.')
+        return redirect('dashboard:events')
+
+    return render(request, 'dashboard/events.html', {
+        'events': MarketingEvent.objects.all()[:200],
+    })
+
+
+@login_required
+def data_events(request):
+    rows = [{
+        'name': e.name,
+        'date': e.date.isoformat(),
+        'scope': e.scope,
+        'notes': e.notes,
+    } for e in MarketingEvent.objects.all()]
+    return JsonResponse({'events': rows})

@@ -19,7 +19,13 @@
 
 <div id="content" class="hidden">
 
-  <div class="tabs tabs-boxed mb-6 w-fit" id="period-tabs"></div>
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+    <label class="label cursor-pointer gap-2">
+      <input type="checkbox" id="chk-events" class="checkbox checkbox-sm">
+      <span class="label-text text-sm">Mostra eventi</span>
+    </label>
+  </div>
 
   <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="kpis"></div>
 
@@ -125,7 +131,6 @@
 
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>const GA4_CFG = {{ cfg_json|safe }};</script>
 {% verbatim %}
 <script>
@@ -145,9 +150,15 @@ const fmtSecs = (v) => {
 };
 
 let DATA = null;
+let EVENTS = [];
 let period = 30;
 let geoMode = "country";
 let charts = { overview: null, channels: null, donut: null, engagement: null, age: null, gender: null };
+
+function annotationPlugin(labels) {
+  if (!$("chk-events").checked) return {};
+  return { annotation: { annotations: MarketingEvents.annotations(EVENTS, labels, "google") } };
+}
 
 function daysAgo(n) {
   const d = new Date();
@@ -197,10 +208,11 @@ function renderKPIs() {
 function renderOverviewChart() {
   if (charts.overview) charts.overview.destroy();
   const rows = DATA.overview.filter(r => inPeriod(r.date)).sort((a, b) => a.date < b.date ? -1 : 1);
+  const labels = rows.map(r => r.date);
   charts.overview = new Chart($("chart-overview"), {
     type: "line",
     data: {
-      labels: rows.map(r => r.date),
+      labels,
       datasets: [
         { label: "Sessioni", data: rows.map(r => r.sessions), borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25 },
         { label: "Utenti totali", data: rows.map(r => r.totalUsers), borderColor: PALETTE[2], backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 2, tension: .25 },
@@ -210,7 +222,7 @@ function renderOverviewChart() {
     options: {
       maintainAspectRatio: false,
       scales: { x: { grid: { color: "#e5e7eb" } }, y: { grid: { color: "#e5e7eb" }, beginAtZero: true } },
-      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } } },
+      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } }, ...annotationPlugin(labels) },
     },
   });
 }
@@ -218,10 +230,11 @@ function renderOverviewChart() {
 function renderEngagementChart() {
   if (charts.engagement) charts.engagement.destroy();
   const rows = DATA.overview.filter(r => inPeriod(r.date)).sort((a, b) => a.date < b.date ? -1 : 1);
+  const labels = rows.map(r => r.date);
   charts.engagement = new Chart($("chart-engagement"), {
     type: "line",
     data: {
-      labels: rows.map(r => r.date),
+      labels,
       datasets: [
         { label: "Bounce rate", data: rows.map(r => r.bounceRate), borderColor: PALETTE[5], backgroundColor: PALETTE[5], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y" },
         { label: "Durata sessione media (s)", data: rows.map(r => r.avgSessionDuration), borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y1" },
@@ -238,6 +251,7 @@ function renderEngagementChart() {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
         tooltip: { callbacks: { label: ctx => ctx.dataset.yAxisID === "y1"
           ? ` ${ctx.dataset.label}: ${fmtSecs(ctx.parsed.y)}` : ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}%` } },
+        ...annotationPlugin(labels),
       },
     },
   });
@@ -407,12 +421,14 @@ function renderAll() {
 
 $("btn-reload").onclick = load;
 $("f-geo").addEventListener("input", renderGeoTable);
+$("chk-events").addEventListener("change", () => { renderOverviewChart(); renderEngagementChart(); });
 
 async function load() {
   try {
     const r = await fetch(DATA_URL, { cache: "no-store" });
     if (!r.ok) throw new Error(r.status);
     DATA = await r.json();
+    EVENTS = await MarketingEvents.load();
     if (!DATA.overview.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
     $("empty-state").classList.add("hidden");
     $("content").classList.remove("hidden");

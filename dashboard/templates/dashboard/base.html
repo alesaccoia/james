@@ -7,6 +7,9 @@
 <title>{% block title %}James{% endblock %} · Marketing</title>
 <link href="https://cdn.jsdelivr.net/npm/daisyui@4/dist/full.min.css" rel="stylesheet" type="text/css" />
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
+<script src="{% static 'dashboard/events.js' %}"></script>
 </head>
 <body class="min-h-screen bg-base-200">
 <div class="navbar bg-base-100 shadow-sm px-4 flex-wrap gap-y-2 py-2">
@@ -18,6 +21,7 @@
       <a href="{% url 'dashboard:compare' %}" class="btn btn-sm btn-ghost {% block nav_compare %}{% endblock %}">Confronto</a>
       <div class="divider divider-horizontal mx-0"></div>
       <a href="{% url 'competitors:traffic' %}" class="btn btn-sm btn-ghost {% block nav_competitors %}{% endblock %}">Competitor</a>
+      <a href="{% url 'dashboard:events' %}" class="btn btn-sm btn-ghost {% block nav_events %}{% endblock %}">Eventi</a>
     {% endif %}
   </div>
   <div class="flex items-center gap-2 flex-none">
