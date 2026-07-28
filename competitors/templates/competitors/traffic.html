@@ -1,0 +1,155 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Traffico competitor{% endblock %}
+{% block nav_competitors %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Traffico competitor</h1>
+    <p class="text-sm opacity-60">Visite mensili stimate (SameAPI) — separato dal resto: non spesa pubblicitaria propria, ma benchmark di mercato.</p>
+  </div>
+  <div class="grow"></div>
+  <a href="{% url 'competitors:upload' %}" class="btn btn-sm btn-primary">Carica export...</a>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Nessun dato ancora. <a class="link" href="{% url 'competitors:upload' %}">Carica un export SameAPI</a> per iniziare.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="join" id="mode-tabs">
+      <button class="btn btn-sm join-item" data-m="visits">Visite</button>
+      <button class="btn btn-sm join-item" data-m="log">Visite (scala log)</button>
+      <button class="btn btn-sm join-item" data-m="share">Quota %</button>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Visite mensili per dominio</h2>
+      <div class="h-96 relative"><canvas id="chart-traffic"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Dati grezzi</h2>
+      <div class="overflow-x-auto max-h-96">
+        <table class="table table-zebra table-pin-rows table-sm" id="raw-table"></table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>const TRAFFIC_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = TRAFFIC_CFG.data_url;
+const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171", "#2dd4bf", "#fb923c", "#c084fc", "#94a3b8"];
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+
+let ROWS = [];
+let mode = "visits";
+let chart = null;
+
+function colorOf(list, name) {
+  const i = list.indexOf(name);
+  return PALETTE[i >= 0 ? i % PALETTE.length : 0];
+}
+
+function renderModeTabs() {
+  $("mode-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.m === mode);
+    b.onclick = () => { mode = b.dataset.m; renderAll(); };
+  });
+}
+
+function renderChart() {
+  if (chart) chart.destroy();
+  const months = [...new Set(ROWS.map(r => r.month))].sort();
+  const totals = {};
+  ROWS.forEach(r => { totals[r.label] = (totals[r.label] || 0) + r.visits; });
+  const labels = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+  const cell = {};
+  ROWS.forEach(r => { cell[r.month + "|" + r.label] = (cell[r.month + "|" + r.label] || 0) + r.visits; });
+
+  const isShare = mode === "share";
+  const monthTotal = {};
+  if (isShare) months.forEach(m => { monthTotal[m] = labels.reduce((s, l) => s + (cell[m + "|" + l] || 0), 0); });
+
+  const datasets = labels.map(l => ({
+    label: l,
+    data: months.map(m => {
+      const v = cell[m + "|" + l];
+      if (v == null) return null;
+      return isShare ? (monthTotal[m] ? (v / monthTotal[m] * 100) : 0) : v;
+    }),
+    borderColor: colorOf(labels, l), backgroundColor: colorOf(labels, l),
+    borderWidth: 2, pointRadius: 3, spanGaps: true, tension: .2,
+  }));
+
+  chart = new Chart($("chart-traffic"), {
+    type: "line",
+    data: { labels: months, datasets },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { color: "#e5e7eb" } },
+        y: {
+          type: mode === "log" ? "logarithmic" : "linear",
+          grid: { color: "#e5e7eb" },
+          ticks: { callback: v => isShare ? v + "%" : fmtN.format(v) },
+        },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 12 } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.parsed.y)}${isShare ? "%" : ""}` } },
+      },
+    },
+  });
+}
+
+function renderTable() {
+  const rows = [...ROWS].sort((a, b) => (a.month < b.month ? 1 : -1) || b.visits - a.visits);
+  const body = rows.slice(0, 500).map(r => `
+    <tr><td>${r.month}</td><td>${r.label}</td><td class="opacity-50">${r.domain}</td><td class="text-right">${fmt(r.visits)}</td></tr>`).join("");
+  $("raw-table").innerHTML =
+    `<thead><tr><th>mese</th><th>competitor</th><th>dominio</th><th class="text-right">visite</th></tr></thead>
+     <tbody>${body || '<tr><td colspan="4" class="opacity-50">nessun dato</td></tr>'}</tbody>`;
+}
+
+function renderAll() {
+  renderModeTabs();
+  renderChart();
+  renderTable();
+}
+
+async function load() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const json = await r.json();
+    ROWS = json.rows || [];
+    if (!ROWS.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    renderAll();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}

@@ -1,0 +1,74 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Carica traffico competitor{% endblock %}
+{% block nav_competitors %}btn-active{% endblock %}
+{% block content %}
+
+<div class="mb-6">
+  <h1 class="text-2xl font-bold">Carica traffico competitor</h1>
+  <p class="text-sm opacity-60">Export CSV da <a class="link" href="https://sameapi.io" target="_blank">sameapi.io</a> — una volta al mese circa. I ricaricamenti sovrascrivono i dati dello stesso mese/dominio.</p>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  <div class="card bg-base-100 shadow lg:col-span-2">
+    <div class="card-body">
+      <h2 class="card-title text-base">Nuovo export</h2>
+      <form method="post" enctype="multipart/form-data" class="flex flex-col gap-3">
+        {% csrf_token %}
+        <input type="file" name="sameapi_file" accept=".csv" class="file-input file-input-bordered w-full" required>
+        <button class="btn btn-primary w-fit" type="submit">Carica</button>
+      </form>
+
+      <div class="divider"></div>
+
+      <h3 class="font-semibold text-sm mb-2">Storico caricamenti</h3>
+      <div class="overflow-x-auto">
+        <table class="table table-sm">
+          <thead><tr><th>file</th><th>quando</th><th>mesi</th><th>domini</th><th>righe</th></tr></thead>
+          <tbody>
+            {% for u in uploads %}
+              <tr>
+                <td>{{ u.filename }}</td>
+                <td>{{ u.uploaded_at|date:"d/m/Y H:i" }}</td>
+                <td>{{ u.months|join:", " }}</td>
+                <td>{{ u.domains }}</td>
+                <td>{{ u.datapoints }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="opacity-50">nessun caricamento ancora</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow h-fit">
+    <div class="card-body">
+      <h2 class="card-title text-base">Competitor tracciati</h2>
+      <p class="text-xs opacity-60 mb-2">Associa un dominio a un nome leggibile dall'<a class="link" href="/admin/competitors/competitor/">admin</a>. I domini non associati vengono comunque mostrati (con l'URL come etichetta).</p>
+      <ul class="text-sm">
+        {% for c in competitors %}
+          <li class="py-1 border-b border-base-200 last:border-0">
+            {{ c.name }}{% if c.is_self %} <span class="badge badge-success badge-sm">noi</span>{% endif %}
+            <span class="opacity-50">— {{ c.domain|default:"nessun dominio" }}</span>
+          </li>
+        {% empty %}
+          <li class="opacity-50">nessun competitor configurato</li>
+        {% endfor %}
+      </ul>
+      <div class="stats stats-vertical mt-4">
+        <div class="stat">
+          <div class="stat-title">Mesi disponibili</div>
+          <div class="stat-value text-lg">{{ months|length }}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Domini con dati</div>
+          <div class="stat-value text-lg">{{ domain_count }}</div>
+        </div>
+      </div>
+      <a href="{% url 'competitors:traffic' %}" class="btn btn-sm btn-outline mt-4">Vedi il grafico →</a>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

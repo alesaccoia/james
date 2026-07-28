@@ -16,6 +16,8 @@
       <a href="{% url 'dashboard:dashboard' %}" class="btn btn-sm btn-ghost {% block nav_meta %}{% endblock %}">Meta Ads</a>
       <a href="{% url 'dashboard:ga4' %}" class="btn btn-sm btn-ghost {% block nav_ga4 %}{% endblock %}">Google Analytics</a>
       <a href="{% url 'dashboard:compare' %}" class="btn btn-sm btn-ghost {% block nav_compare %}{% endblock %}">Confronto</a>
+      <div class="divider divider-horizontal mx-0"></div>
+      <a href="{% url 'competitors:traffic' %}" class="btn btn-sm btn-ghost {% block nav_competitors %}{% endblock %}">Competitor</a>
     {% endif %}
   </div>
   <div class="flex items-center gap-2 flex-none">
