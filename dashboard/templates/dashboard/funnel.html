@@ -101,6 +101,7 @@ function renderPicker() {
           <input type="checkbox" class="checkbox checkbox-sm" data-k="${key}" ${selected.has(key) ? "checked" : ""}
                  style="accent-color:${colorOf(key)}">
           <span class="label-text text-sm">${kpi.name}</span>
+          ${kpi.computed ? '<span class="badge badge-success badge-xs" title="Calcolato automaticamente dai dati Airbyte">live</span>' : ''}
         </label>`;
     }
   }
@@ -177,7 +178,7 @@ function renderStageCards() {
       const latest = series.length ? series[series.length - 1] : null;
       return `
         <tr>
-          <td>${kpi.name}</td>
+          <td>${kpi.name} ${kpi.computed ? '<span class="badge badge-success badge-xs" title="Calcolato automaticamente dai dati Airbyte">live</span>' : ''}</td>
           <td class="text-right">${latest ? fmtByUnit(latest.value, kpi.unit) : "—"}</td>
           <td class="text-right opacity-60">${latest ? latest.date : "—"}</td>
           <td class="text-right opacity-60">${kpi.target_value != null ? fmtByUnit(kpi.target_value, kpi.unit) : "—"}</td>

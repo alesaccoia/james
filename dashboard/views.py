@@ -347,6 +347,28 @@ def event_delete(request, pk):
 
 # --------------------------------------------------------------- Funnel
 
+def _client_acquired_series():
+    """Daily count of leads that reached client_acquired, from the wundt
+    lead status event log (mentor_lead_status_events, via Airbyte)."""
+    totals = defaultdict(int)
+    for data in _stream_rows('mentor_lead_status_events'):
+        if data.get('to_status') != 'client_acquired':
+            continue
+        date = str(data.get('created_at') or '')[:10]
+        if not date:
+            continue
+        totals[date] += 1
+    return [{'date': d, 'value': v} for d, v in sorted(totals.items())]
+
+
+# Funnel KPIs computed from real Airbyte data instead of manual entry, keyed
+# by (stage slug, KPI name) as seeded in migration 0005_seed_default_funnel.
+# Add an entry here whenever another KPI gets a real data source wired up.
+FUNNEL_COMPUTED_KPIS = {
+    ('conversion', 'Clienti nuovi paganti'): _client_acquired_series,
+}
+
+
 @login_required
 def funnel(request):
     cfg = {'data_url': reverse('dashboard:data_funnel')}
@@ -362,13 +384,20 @@ def data_funnel(request):
     for stage in FunnelStage.objects.filter(is_active=True).prefetch_related('kpis__values', 'sources'):
         kpis = []
         for kpi in stage.kpis.filter(is_active=True):
+            computed_fn = FUNNEL_COMPUTED_KPIS.get((stage.slug, kpi.name))
+            if computed_fn:
+                series, computed = computed_fn(), True
+            else:
+                series = [{'date': v.date.isoformat(), 'value': v.value, 'note': v.note}
+                         for v in sorted(kpi.values.all(), key=lambda v: v.date)]
+                computed = False
             kpis.append({
                 'id': kpi.pk,
                 'name': kpi.name,
                 'unit': kpi.unit,
                 'target_value': kpi.target_value,
-                'series': [{'date': v.date.isoformat(), 'value': v.value, 'note': v.note}
-                          for v in sorted(kpi.values.all(), key=lambda v: v.date)],
+                'computed': computed,
+                'series': series,
             })
         stages.append({
             'id': stage.pk,
