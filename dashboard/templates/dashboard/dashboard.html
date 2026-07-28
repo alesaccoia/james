@@ -217,14 +217,16 @@ function renderChart() {
   const datasets = metrics.map(m => {
     const byBucket = {};
     rows.forEach(r => { byBucket[bucketOf(r.date)] = (byBucket[bucketOf(r.date)] || 0) + (r[m] || 0); });
-    let values = buckets.map(b => byBucket[b] || 0);
+    const absValues = buckets.map(b => byBucket[b] || 0);
+    let values = absValues;
     if (normalize) {
-      const max = Math.max(...values, 0) || 1;
-      values = values.map(v => (v / max) * 100);
+      const max = Math.max(...absValues, 0) || 1;
+      values = absValues.map(v => (v / max) * 100);
     }
     return {
       label: METRIC_DEFS[m].label,
       data: values,
+      _abs: absValues,
       borderColor: METRIC_DEFS[m].color, backgroundColor: METRIC_DEFS[m].color,
       borderWidth: 2, pointRadius: 2, tension: .25, fill: false,
     };
@@ -243,8 +245,8 @@ function renderChart() {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
         tooltip: { callbacks: { label: ctx => {
           const m = metrics[ctx.datasetIndex];
-          const val = normalize ? fmtN.format(ctx.parsed.y) + "%" : fmtByUnit(ctx.parsed.y, METRIC_DEFS[m].unit);
-          return ` ${ctx.dataset.label}: ${val}`;
+          const abs = fmtByUnit(ctx.dataset._abs[ctx.dataIndex], METRIC_DEFS[m].unit);
+          return normalize ? ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}% (${abs})` : ` ${ctx.dataset.label}: ${abs}`;
         } } },
         ...($("chk-events").checked ? { annotation: { annotations: MarketingEvents.annotations(
           EVENTS.map(e => ({ ...e, date: bucketOf(e.date) })), buckets) } } : {}),

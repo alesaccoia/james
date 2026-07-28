@@ -45,18 +45,29 @@
     </div>
   </div>
 
+  <div class="flex flex-wrap items-center gap-3 mb-2">
+    <div class="join" id="channel-metric-tabs">
+      <button class="btn btn-xs join-item" data-cm="sessions">Sessioni</button>
+      <button class="btn btn-xs join-item" data-cm="totalUsers">Utenti totali</button>
+    </div>
+    <div class="join" id="channel-view-tabs">
+      <button class="btn btn-xs join-item" data-cv="share">% del giorno</button>
+      <button class="btn btn-xs join-item" data-cv="abs">Assoluto</button>
+    </div>
+  </div>
+
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
     <div class="card bg-base-100 shadow">
       <div class="card-body">
         <h2 class="card-title">Traffico per canale</h2>
-        <p class="text-sm opacity-60">Sessioni per canale di acquisizione, giorno per giorno.</p>
+        <p class="text-sm opacity-60">Per canale di acquisizione, giorno per giorno.</p>
         <div class="h-80 relative"><canvas id="chart-channels"></canvas></div>
       </div>
     </div>
     <div class="card bg-base-100 shadow">
       <div class="card-body">
         <h2 class="card-title">Quota canali nel periodo</h2>
-        <p class="text-sm opacity-60">Totale sessioni per canale, periodo selezionato.</p>
+        <p class="text-sm opacity-60">Quota % sul totale del periodo selezionato.</p>
         <div class="h-80 relative"><canvas id="chart-channels-donut"></canvas></div>
       </div>
     </div>
@@ -137,7 +148,10 @@ let DATA = null;
 let EVENTS = [];
 let period = 30;
 let geoMode = "country";
+let channelMetric = "sessions"; // sessions | totalUsers
+let channelView = "share"; // share (100%-stacked) | abs
 let charts = { overview: null, channels: null, donut: null, engagement: null };
+const CHANNEL_METRIC_LABEL = { sessions: "Sessioni", totalUsers: "Utenti totali" };
 
 function annotationPlugin(labels) {
   if (!$("chk-events").checked) return {};
@@ -265,35 +279,66 @@ function renderGeoTable() {
     `<thead><tr><th>${label}</th><th class="text-right">utenti</th><th class="text-right">nuovi utenti</th></tr></thead><tbody>${body || '<tr><td colspan="3" class="opacity-50">nessun dato</td></tr>'}</tbody>`;
 }
 
+function renderChannelTabs() {
+  $("channel-metric-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.cm === channelMetric);
+    b.onclick = () => { channelMetric = b.dataset.cm; renderChannelTabs(); renderChannelsChart(); };
+  });
+  $("channel-view-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.cv === channelView);
+    b.onclick = () => { channelView = b.dataset.cv; renderChannelTabs(); renderChannelsChart(); };
+  });
+}
+
 function renderChannelsChart() {
   if (charts.channels) charts.channels.destroy();
   if (charts.donut) charts.donut.destroy();
   const rows = DATA.channels.filter(r => inPeriod(r.date));
   const dates = [...new Set(rows.map(r => r.date))].sort();
   const totals = {};
-  rows.forEach(r => { totals[r.channel] = (totals[r.channel] || 0) + r.sessions; });
+  rows.forEach(r => { totals[r.channel] = (totals[r.channel] || 0) + r[channelMetric]; });
   const channelNames = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
   const cell = {};
-  rows.forEach(r => { cell[r.date + "|" + r.channel] = r.sessions; });
+  rows.forEach(r => { cell[r.date + "|" + r.channel] = (cell[r.date + "|" + r.channel] || 0) + r[channelMetric]; });
+
+  const isShare = channelView === "share";
+  const dayTotal = {};
+  if (isShare) dates.forEach(d => { dayTotal[d] = channelNames.reduce((s, c) => s + (cell[d + "|" + c] || 0), 0); });
 
   charts.channels = new Chart($("chart-channels"), {
     type: "bar",
     data: {
       labels: dates,
-      datasets: channelNames.map(c => ({
-        label: c,
-        data: dates.map(d => cell[d + "|" + c] || 0),
-        backgroundColor: colorOf(channelNames, c),
-        borderRadius: 2,
-      })),
+      datasets: channelNames.map(c => {
+        const abs = dates.map(d => cell[d + "|" + c] || 0);
+        return {
+          label: c,
+          data: dates.map((d, i) => isShare ? (dayTotal[d] ? abs[i] / dayTotal[d] * 100 : 0) : abs[i]),
+          _abs: abs,
+          backgroundColor: colorOf(channelNames, c),
+          borderRadius: isShare ? 0 : 2,
+        };
+      }),
     },
     options: {
       maintainAspectRatio: false,
-      scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, grid: { color: "#e5e7eb" } } },
-      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 10, font: { size: 10 } } } },
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => isShare ? v + "%" : fmtN.format(v) } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 10, font: { size: 10 } } },
+        tooltip: { callbacks: { label: ctx => {
+          const abs = ctx.dataset._abs[ctx.dataIndex];
+          return isShare
+            ? ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}% (${fmt(abs)})`
+            : ` ${ctx.dataset.label}: ${fmt(abs)}`;
+        } } },
+      },
     },
   });
 
+  const grandTotal = channelNames.reduce((s, c) => s + totals[c], 0);
   charts.donut = new Chart($("chart-channels-donut"), {
     type: "doughnut",
     data: {
@@ -302,7 +347,14 @@ function renderChannelsChart() {
     },
     options: {
       maintainAspectRatio: false,
-      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 10, font: { size: 10 } } } },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 10, font: { size: 10 } } },
+        tooltip: { callbacks: { label: ctx => {
+          const abs = ctx.parsed;
+          const pct = grandTotal ? (abs / grandTotal * 100) : 0;
+          return ` ${ctx.label}: ${fmtN.format(pct)}% (${fmt(abs)})`;
+        } } },
+      },
     },
   });
 }
@@ -360,6 +412,7 @@ function renderAll() {
   renderKPIs();
   renderOverviewChart();
   renderEngagementChart();
+  renderChannelTabs();
   renderChannelsChart();
   renderEventsTable();
   renderPagesTable();

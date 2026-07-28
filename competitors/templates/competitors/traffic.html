@@ -86,16 +86,20 @@ function renderChart() {
   const monthTotal = {};
   if (isShare) months.forEach(m => { monthTotal[m] = labels.reduce((s, l) => s + (cell[m + "|" + l] || 0), 0); });
 
-  const datasets = labels.map(l => ({
-    label: l,
-    data: months.map(m => {
-      const v = cell[m + "|" + l];
-      if (v == null) return isShare ? 0 : null;
-      return isShare ? (monthTotal[m] ? (v / monthTotal[m] * 100) : 0) : v;
-    }),
-    backgroundColor: colorOf(labels, l),
-    borderRadius: isShare ? 0 : 3,
-  }));
+  const datasets = labels.map(l => {
+    const abs = months.map(m => cell[m + "|" + l] ?? null);
+    return {
+      label: l,
+      data: months.map((m, i) => {
+        const v = abs[i];
+        if (v == null) return isShare ? 0 : null;
+        return isShare ? (monthTotal[m] ? (v / monthTotal[m] * 100) : 0) : v;
+      }),
+      _abs: abs,
+      backgroundColor: colorOf(labels, l),
+      borderRadius: isShare ? 0 : 3,
+    };
+  });
 
   chart = new Chart($("chart-traffic"), {
     type: "bar",
@@ -113,7 +117,10 @@ function renderChart() {
       },
       plugins: {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 12 } },
-        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.parsed.y)}${isShare ? "%" : ""}` } },
+        tooltip: { callbacks: { label: ctx => {
+          const abs = ctx.dataset._abs[ctx.dataIndex];
+          return isShare ? ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}% (${fmt(abs)})` : ` ${ctx.dataset.label}: ${fmt(abs)}`;
+        } } },
       },
     },
   });

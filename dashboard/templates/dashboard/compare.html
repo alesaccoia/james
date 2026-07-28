@@ -155,14 +155,16 @@ function renderChart() {
 
   const datasets = keys.map(k => {
     const byDate = Object.fromEntries(filteredSeries(k).map(p => [p.date, p.value]));
-    let values = dates.map(d => byDate[d] ?? null);
+    const absValues = dates.map(d => byDate[d] ?? null);
+    let values = absValues;
     if (mode === "norm") {
-      const max = Math.max(...values.filter(v => v != null), 0) || 1;
-      values = values.map(v => v == null ? null : (v / max) * 100);
+      const max = Math.max(...absValues.filter(v => v != null), 0) || 1;
+      values = absValues.map(v => v == null ? null : (v / max) * 100);
     }
     return {
       label: METRIC_DEFS[k].label,
       data: values,
+      _abs: absValues,
       borderColor: colorOf(k), backgroundColor: colorOf(k),
       borderWidth: 2, pointRadius: 2, tension: .25, spanGaps: true,
     };
@@ -185,8 +187,8 @@ function renderChart() {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
         tooltip: { callbacks: { label: ctx => {
           const def = METRIC_DEFS[METRIC_KEYS.find(k => METRIC_DEFS[k].label === ctx.dataset.label)] || {};
-          const val = mode === "norm" ? fmtN.format(ctx.parsed.y) + "%" : fmtByUnit(ctx.parsed.y, def.unit);
-          return ` ${ctx.dataset.label}: ${val}`;
+          const abs = fmtByUnit(ctx.dataset._abs[ctx.dataIndex], def.unit);
+          return mode === "norm" ? ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}% (${abs})` : ` ${ctx.dataset.label}: ${abs}`;
         } } },
         ...($("chk-events").checked ? { annotation: { annotations: MarketingEvents.annotations(EVENTS, dates) } } : {}),
       },
