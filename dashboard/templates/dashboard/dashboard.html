@@ -246,7 +246,7 @@ function renderChart() {
           const val = normalize ? fmtN.format(ctx.parsed.y) + "%" : fmtByUnit(ctx.parsed.y, METRIC_DEFS[m].unit);
           return ` ${ctx.dataset.label}: ${val}`;
         } } },
-        ...($("chk-events").checked ? { annotation: { annotations: MarketingEvents.annotations(EVENTS, buckets, "meta") } } : {}),
+        ...($("chk-events").checked ? { annotation: { annotations: MarketingEvents.annotations(EVENTS, buckets) } } : {}),
       },
     },
   });

@@ -5,33 +5,39 @@
 
 <div class="mb-6">
   <h1 class="text-2xl font-bold">Eventi di marketing</h1>
-  <p class="text-sm opacity-60">Esperimenti, cambi di impostazioni, modifiche al sito o alle landing — vengono mostrati come linee verticali sui grafici (nascosti di default, attivabili con "Mostra eventi").</p>
+  <p class="text-sm opacity-60">Esperimenti, cambi di impostazioni, modifiche al sito o alle landing — vengono mostrati come linee verticali su tutti i grafici (nascosti di default, attivabili con "Mostra eventi").</p>
 </div>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
   <div class="card bg-base-100 shadow h-fit">
     <div class="card-body">
-      <h2 class="card-title text-base">Nuovo evento</h2>
+      <h2 class="card-title text-base">{% if edit_event %}Modifica evento{% else %}Nuovo evento{% endif %}</h2>
       <form method="post" class="flex flex-col gap-3">
         {% csrf_token %}
+        {% if edit_event %}<input type="hidden" name="event_id" value="{{ edit_event.id }}">{% endif %}
         <div>
           <label class="label"><span class="label-text">Nome</span></label>
-          <input type="text" name="name" class="input input-bordered w-full" placeholder="es. Nuovo creativo carosello" required>
+          <input type="text" name="name" class="input input-bordered w-full" placeholder="es. Nuovo creativo carosello"
+                 value="{{ edit_event.name|default:'' }}" required>
         </div>
         <div>
           <label class="label"><span class="label-text">Data</span></label>
-          <input type="date" name="date" class="input input-bordered w-full" required>
+          <input type="date" name="date" class="input input-bordered w-full" value="{{ edit_event.date|date:'Y-m-d' }}" required>
         </div>
         <div>
           <label class="label"><span class="label-text">Scope</span></label>
-          <input type="text" name="scope" class="input input-bordered w-full" placeholder="es. meta, google, sito, landing…">
-          <p class="text-xs opacity-50 mt-1">Testo libero. Usalo per filtrare quali grafici mostrano questo evento (es. scrivi "meta" per farlo comparire solo sui grafici Meta Ads).</p>
+          <input type="text" name="scope" class="input input-bordered w-full" placeholder="es. meta, google, sito, landing…"
+                 value="{{ edit_event.scope|default:'' }}">
+          <p class="text-xs opacity-50 mt-1">Testo libero, solo per tua reference — non filtra dove appare l'evento: viene mostrato su tutti i grafici quando attivi "Mostra eventi".</p>
         </div>
         <div>
           <label class="label"><span class="label-text">Note (opzionale)</span></label>
-          <textarea name="notes" class="textarea textarea-bordered w-full" rows="2"></textarea>
+          <textarea name="notes" class="textarea textarea-bordered w-full" rows="2">{{ edit_event.notes|default:'' }}</textarea>
         </div>
-        <button class="btn btn-primary w-fit" type="submit">Aggiungi</button>
+        <div class="flex gap-2">
+          <button class="btn btn-primary w-fit" type="submit">{% if edit_event %}Salva modifiche{% else %}Aggiungi{% endif %}</button>
+          {% if edit_event %}<a href="{% url 'dashboard:events' %}" class="btn btn-ghost w-fit">Annulla</a>{% endif %}
+        </div>
       </form>
     </div>
   </div>
@@ -41,17 +47,25 @@
       <h2 class="card-title text-base">Storico eventi</h2>
       <div class="overflow-x-auto max-h-[600px]">
         <table class="table table-zebra table-pin-rows table-sm">
-          <thead><tr><th>data</th><th>nome</th><th>scope</th><th>note</th></tr></thead>
+          <thead><tr><th>data</th><th>nome</th><th>scope</th><th>note</th><th></th></tr></thead>
           <tbody>
             {% for e in events %}
-              <tr>
+              <tr class="{% if edit_event.id == e.id %}bg-base-200{% endif %}">
                 <td class="whitespace-nowrap">{{ e.date|date:"d/m/Y" }}</td>
                 <td>{{ e.name }}</td>
                 <td>{% if e.scope %}<span class="badge badge-ghost badge-sm">{{ e.scope }}</span>{% endif %}</td>
                 <td class="opacity-60">{{ e.notes }}</td>
+                <td class="whitespace-nowrap">
+                  <a href="{% url 'dashboard:events' %}?modifica={{ e.id }}" class="btn btn-xs btn-ghost">Modifica</a>
+                  <form method="post" action="{% url 'dashboard:event_delete' e.id %}" class="inline"
+                        onsubmit="return confirm('Eliminare l\'evento &quot;{{ e.name|escapejs }}&quot;?');">
+                    {% csrf_token %}
+                    <button class="btn btn-xs btn-ghost text-error" type="submit">Elimina</button>
+                  </form>
+                </td>
               </tr>
             {% empty %}
-              <tr><td colspan="4" class="opacity-50">nessun evento ancora</td></tr>
+              <tr><td colspan="5" class="opacity-50">nessun evento ancora</td></tr>
             {% endfor %}
           </tbody>
         </table>

@@ -16,4 +16,5 @@ urlpatterns = [
 
     path('eventi/', views.events, name='events'),
     path('eventi/data.json', views.data_events, name='data_events'),
+    path('eventi/<int:pk>/elimina/', views.event_delete, name='event_delete'),
 ]

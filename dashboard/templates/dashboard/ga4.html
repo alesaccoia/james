@@ -157,7 +157,7 @@ let charts = { overview: null, channels: null, donut: null, engagement: null, ag
 
 function annotationPlugin(labels) {
   if (!$("chk-events").checked) return {};
-  return { annotation: { annotations: MarketingEvents.annotations(EVENTS, labels, "google") } };
+  return { annotation: { annotations: MarketingEvents.annotations(EVENTS, labels) } };
 }
 
 function daysAgo(n) {

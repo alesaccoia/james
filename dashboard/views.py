@@ -329,20 +329,43 @@ def data_compare(request):
 @login_required
 def events(request):
     if request.method == 'POST':
+        event_id = (request.POST.get('event_id') or '').strip()
         name = (request.POST.get('name') or '').strip()
         date = (request.POST.get('date') or '').strip()
         scope = (request.POST.get('scope') or '').strip()
         notes = (request.POST.get('notes') or '').strip()
         if not name or not date:
             messages.error(request, 'Nome e data sono obbligatori.')
-            return redirect('dashboard:events')
-        MarketingEvent.objects.create(name=name, date=date, scope=scope, notes=notes)
-        messages.success(request, f'Evento "{name}" aggiunto.')
+            return redirect(f'{reverse("dashboard:events")}?modifica={event_id}' if event_id else 'dashboard:events')
+        if event_id:
+            updated = MarketingEvent.objects.filter(pk=event_id).update(
+                name=name, date=date, scope=scope, notes=notes)
+            messages.success(request, f'Evento "{name}" aggiornato.' if updated else 'Evento non trovato.')
+        else:
+            MarketingEvent.objects.create(name=name, date=date, scope=scope, notes=notes)
+            messages.success(request, f'Evento "{name}" aggiunto.')
         return redirect('dashboard:events')
+
+    edit_event = None
+    edit_id = request.GET.get('modifica')
+    if edit_id:
+        edit_event = MarketingEvent.objects.filter(pk=edit_id).first()
 
     return render(request, 'dashboard/events.html', {
         'events': MarketingEvent.objects.all()[:200],
+        'edit_event': edit_event,
     })
+
+
+@login_required
+def event_delete(request, pk):
+    if request.method == 'POST':
+        event = MarketingEvent.objects.filter(pk=pk).first()
+        if event:
+            name = event.name
+            event.delete()
+            messages.success(request, f'Evento "{name}" eliminato.')
+    return redirect('dashboard:events')
 
 
 @login_required
