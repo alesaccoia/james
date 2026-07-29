@@ -150,19 +150,19 @@ function renderChart() {
   const rateSeries = buckets.map((b, i) => reachSeries[i] ? (engagementSeries[i] / reachSeries[i] * 100) : null);
 
   chart = new Chart($("chart-trend"), {
-    type: "line",
+    type: "bar",
     data: {
       labels: buckets,
       datasets: [
-        { label: "Reach", data: reachSeries, borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y" },
-        { label: "Interazioni totali", data: engagementSeries, borderColor: PALETTE[1], backgroundColor: PALETTE[1], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y" },
-        { label: "Tasso di engagement", data: rateSeries, borderColor: PALETTE[2], backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 2, tension: .25, borderDash: [4, 3], yAxisID: "y1" },
+        { type: "bar", label: "Reach", data: reachSeries, backgroundColor: PALETTE[0], borderRadius: 2, yAxisID: "y" },
+        { type: "bar", label: "Interazioni totali", data: engagementSeries, backgroundColor: PALETTE[1], borderRadius: 2, yAxisID: "y" },
+        { type: "line", label: "Tasso di engagement", data: rateSeries, borderColor: PALETTE[2], backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y1" },
       ],
     },
     options: {
       maintainAspectRatio: false,
       scales: {
-        x: { grid: { color: "#e5e7eb" } },
+        x: { grid: { display: false } },
         y: { position: "left", beginAtZero: true, grid: { color: "#e5e7eb" } },
         y1: { position: "right", beginAtZero: true, grid: { display: false }, ticks: { callback: v => v + "%" } },
       },

@@ -148,17 +148,17 @@ function renderChart() {
     return {
       label: METRIC_LABELS[m],
       data: buckets.map(b => byBucket[b] || 0),
-      borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length],
-      borderWidth: 2, pointRadius: 2, tension: .25,
+      backgroundColor: PALETTE[i % PALETTE.length],
+      borderRadius: 2,
     };
   });
 
   chart = new Chart($("chart-page"), {
-    type: "line",
+    type: "bar",
     data: { labels: buckets, datasets },
     options: {
       maintainAspectRatio: false,
-      scales: { x: { grid: { color: "#e5e7eb" } }, y: { grid: { color: "#e5e7eb" }, beginAtZero: true } },
+      scales: { x: { grid: { display: false } }, y: { grid: { color: "#e5e7eb" }, beginAtZero: true } },
       plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } } },
     },
   });
