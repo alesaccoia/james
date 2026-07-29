@@ -5,7 +5,10 @@ typed table per stream — real columns, not a JSON blob — but keeps four
 `_airbyte_*` metadata columns alongside the business columns. We reconstruct
 a data dict from the non-meta columns of each row and mirror it here via the
 'airbyte' Django DB alias, deduped by a per-stream natural key so re-syncing
-an overlapping date range never piles up duplicates.
+an overlapping date range never piles up duplicates. For a handful of
+streams (see REFRESHABLE_STREAMS below) the existing row is updated in
+place instead of skipped, since the same natural key can carry different
+data over time (e.g. a post's lifetime reach keeps growing).
 
 Run manually, e.g.:
   .venv/bin/python manage.py import_airbyte
@@ -55,6 +58,23 @@ NATURAL_KEYS = {
     'mentor_ig_page_ig_media_insights': lambda d: d.get('id'),
 }
 
+# Streams whose natural key stays the same forever but whose *data* keeps
+# changing after the row is first seen - Meta insights are lifetime running
+# totals (reach, likes...) that grow for weeks after a post goes up, and page
+# profile fields (fan_count...) drift too. For these, re-syncing overwrites
+# the stored data instead of being skipped as a duplicate, so numbers stay
+# current. Everything else (e.g. fb_ads_insights, keyed by ad_id+date) is a
+# closed daily bucket once the day is over, so insert-once-skip-after stays
+# the default and is cheaper.
+REFRESHABLE_STREAMS = {
+    'mentor_meta_pages_page',
+    'mentor_meta_pages_post',
+    'mentor_meta_pages_post_insights',
+    'mentor_meta_pages_page_insights',
+    'mentor_ig_page_ig_media',
+    'mentor_ig_page_ig_media_insights',
+}
+
 META_COLS = {'_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_meta', '_airbyte_generation_id'}
 
 
@@ -86,7 +106,7 @@ class Command(BaseCommand):
                 """)
                 tables = [r[0] for r in cur.fetchall()]
 
-                new_total, seen_total = 0, 0
+                new_total, updated_total, seen_total = 0, 0, 0
                 for stream in tables:
                     cur.execute(f'SELECT * FROM "{stream}"')
                     columns = [d[0] for d in cur.description]
@@ -94,34 +114,50 @@ class Command(BaseCommand):
                     id_idx = columns.index('_airbyte_raw_id')
                     ts_idx = columns.index('_airbyte_extracted_at') if '_airbyte_extracted_at' in columns else None
 
-                    existing = set(AirbyteRecord.objects.filter(stream=stream)
-                                   .values_list('ab_id', flat=True))
+                    refreshable = stream in REFRESHABLE_STREAMS
+                    if refreshable:
+                        existing_records = {r.ab_id: r for r in AirbyteRecord.objects.filter(stream=stream)}
+                        existing = set(existing_records)
+                    else:
+                        existing_records = {}
+                        existing = set(AirbyteRecord.objects.filter(stream=stream)
+                                       .values_list('ab_id', flat=True))
                     key_fn = NATURAL_KEYS.get(stream)
 
-                    batch, seen = [], 0
+                    batch, to_update, seen = [], [], 0
                     for row in cur.fetchall():
                         seen += 1
                         data = {c: _jsonable(row[columns.index(c)]) for c in data_cols}
                         natural = key_fn(data) if key_fn else None
                         ab_id = (str(natural) if natural else str(row[id_idx]))[:300]
-                        if ab_id in existing:
-                            continue
                         ts = row[ts_idx] if ts_idx is not None else None
                         if ts and ts.tzinfo is None:
                             ts = ts.replace(tzinfo=dt_timezone.utc)
+                        if ab_id in existing:
+                            if refreshable:
+                                rec = existing_records[ab_id]
+                                if rec.data != data:
+                                    rec.data = data
+                                    rec.emitted_at = ts
+                                    to_update.append(rec)
+                            continue
                         batch.append(AirbyteRecord(stream=stream, ab_id=ab_id, emitted_at=ts, data=data))
                         existing.add(ab_id)
 
                     AirbyteRecord.objects.bulk_create(batch, batch_size=500, ignore_conflicts=True)
+                    if to_update:
+                        AirbyteRecord.objects.bulk_update(to_update, ['data', 'emitted_at'], batch_size=500)
                     new_total += len(batch)
+                    updated_total += len(to_update)
                     seen_total += seen
-                    self.stdout.write(f'  {stream}: {seen} rows, {len(batch)} new')
+                    suffix = f', {len(to_update)} updated' if refreshable else ''
+                    self.stdout.write(f'  {stream}: {seen} rows, {len(batch)} new{suffix}')
 
             log.tables_seen = tables
             log.records_new = new_total
             log.records_seen = seen_total
             self.stdout.write(self.style.SUCCESS(
-                f'Import ok: {len(tables)} stream(s), {new_total} new record(s).'))
+                f'Import ok: {len(tables)} stream(s), {new_total} new record(s), {updated_total} updated.'))
         except Exception as exc:
             log.ok = False
             log.error = str(exc)[:2000]
