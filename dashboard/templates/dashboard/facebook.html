@@ -1,0 +1,209 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Facebook{% endblock %}
+{% block nav_facebook %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Facebook</h1>
+    <p class="text-sm opacity-60">Pagina e post organici — nessuna sponsorizzazione</p>
+  </div>
+  <div class="grow"></div>
+  <div class="badge badge-lg badge-outline" id="pill-range">periodo: —</div>
+  <button class="btn btn-sm" id="btn-reload">Ricarica</button>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Nessun dato ancora. Serve una sync Airbyte completata (Facebook Pages) e poi <code>manage.py import_airbyte</code>.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <div class="alert alert-warning mb-6 text-sm">
+    <span>Meta ha deprecato tutte le metriche di <strong>reach</strong> per le Pagine Facebook (a livello pagina e a livello post) — non più disponibili via API, in nessuna versione recente. I dati sotto sono i migliori indicatori di copertura/engagement rimasti: azioni sulla pagina, interazioni, visualizzazioni, visite, follower netti.</span>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+  </div>
+
+  <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="kpis"></div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Pagina nel tempo</h2>
+      <p class="text-sm opacity-60">Metriche giornaliere della pagina, periodo selezionato.</p>
+      <div class="flex flex-wrap gap-3 mb-2" id="metric-picker"></div>
+      <div class="h-80 relative"><canvas id="chart-page"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Post</h2>
+      <p class="text-sm opacity-60">Uno per riga, ordinati per data. Engagement = reazioni + click + condivisioni.</p>
+      <input type="text" id="f-text" placeholder="cerca nel testo…" class="input input-bordered input-sm w-full max-w-xs mb-3">
+      <div class="overflow-x-auto max-h-[520px]">
+        <table class="table table-zebra table-pin-rows table-sm" id="posts-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-xs opacity-50 mt-8">Fonte: database (Airbyte → Postgres, source-facebook-pages) · post: <span id="src-rows">0</span></p>
+</div>
+
+<script>const FB_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = FB_CFG.data_url;
+const METRIC_LABELS = FB_CFG.metric_labels;
+const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171"];
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+
+let DATA = null;
+let period = 30;
+let selectedMetrics = new Set(["page_total_actions", "page_post_engagements"]);
+let chart = null;
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function inPeriod(date) {
+  if (period === "all") return true;
+  return date >= daysAgo(period);
+}
+
+function renderPeriodTabs() {
+  const tabs = [[7, "7 giorni"], [30, "30 giorni"], [90, "90 giorni"], ["all", "Tutto"]];
+  $("period-tabs").innerHTML = tabs.map(([v, l]) =>
+    `<a class="tab ${v === period ? "tab-active" : ""}" data-v="${v}">${l}</a>`).join("");
+  $("period-tabs").querySelectorAll("a").forEach(b =>
+    b.onclick = () => { period = b.dataset.v === "all" ? "all" : Number(b.dataset.v); renderAll(); });
+}
+
+function renderKPIs() {
+  const insights = DATA.page_insights.filter(r => inPeriod(r.date));
+  const sum = (metric) => insights.filter(r => r.metric === metric).reduce((s, r) => s + r.value, 0);
+  const posts = DATA.posts.filter(p => inPeriod(p.date));
+  const totalEngagement = posts.reduce((s, p) => s + p.engagement, 0);
+
+  const defs = [
+    { name: "Post pubblicati", val: fmt(posts.length) },
+    { name: "Engagement sui post", val: fmt(totalEngagement) },
+    ...Object.entries(METRIC_LABELS).map(([k, label]) => ({ name: label, val: fmt(sum(k)) })),
+  ];
+  if (DATA.page) {
+    defs.unshift({ name: "Follower (ultimo dato)", val: fmt(DATA.page.followers_count || DATA.page.fan_count) });
+  }
+  $("kpis").innerHTML = defs.map(d => `
+    <div class="stat">
+      <div class="stat-title">${d.name}</div>
+      <div class="stat-value text-2xl">${d.val}</div>
+    </div>`).join("");
+}
+
+function renderMetricPicker() {
+  $("metric-picker").innerHTML = Object.entries(METRIC_LABELS).map(([k, label], i) => `
+    <label class="label cursor-pointer gap-2 py-0">
+      <input type="checkbox" class="checkbox checkbox-sm" data-m="${k}" ${selectedMetrics.has(k) ? "checked" : ""} style="accent-color:${PALETTE[i % PALETTE.length]}">
+      <span class="label-text text-sm">${label}</span>
+    </label>`).join("");
+  $("metric-picker").querySelectorAll("input").forEach(cb => {
+    cb.onchange = () => {
+      if (cb.checked) selectedMetrics.add(cb.dataset.m); else selectedMetrics.delete(cb.dataset.m);
+      renderChart();
+    };
+  });
+}
+
+function renderChart() {
+  if (chart) chart.destroy();
+  const rows = DATA.page_insights.filter(r => inPeriod(r.date));
+  const dates = [...new Set(rows.map(r => r.date))].sort();
+  const metrics = Object.keys(METRIC_LABELS).filter(m => selectedMetrics.has(m));
+  if (!dates.length || !metrics.length) return;
+
+  const datasets = metrics.map((m, i) => {
+    const byDate = {};
+    rows.filter(r => r.metric === m).forEach(r => { byDate[r.date] = r.value; });
+    return {
+      label: METRIC_LABELS[m],
+      data: dates.map(d => byDate[d] || 0),
+      borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length],
+      borderWidth: 2, pointRadius: 2, tension: .25,
+    };
+  });
+
+  chart = new Chart($("chart-page"), {
+    type: "line",
+    data: { labels: dates, datasets },
+    options: {
+      maintainAspectRatio: false,
+      scales: { x: { grid: { color: "#e5e7eb" } }, y: { grid: { color: "#e5e7eb" }, beginAtZero: true } },
+      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } } },
+    },
+  });
+}
+
+function renderPostsTable() {
+  const ft = $("f-text").value.toLowerCase();
+  const posts = DATA.posts.filter(p => inPeriod(p.date) && (!ft || p.text.toLowerCase().includes(ft)));
+  const body = posts.map(p => `
+    <tr>
+      <td class="whitespace-nowrap">${p.date}</td>
+      <td class="max-w-sm truncate" title="${(p.text || "").replace(/"/g, '&quot;')}">${p.text || '<span class="opacity-40">(nessun testo)</span>'}</td>
+      <td class="text-right">${fmt(p.reactions)}</td>
+      <td class="text-right">${fmt(p.clicks)}</td>
+      <td class="text-right">${fmt(p.media_view)}</td>
+      <td class="text-right">${fmt(p.shares)}</td>
+      <td class="text-right font-semibold">${fmt(p.engagement)}</td>
+      <td>${p.permalink ? `<a href="${p.permalink}" target="_blank" rel="noopener" class="link link-primary">apri</a>` : "—"}</td>
+    </tr>`).join("");
+  $("posts-table").innerHTML =
+    `<thead><tr><th>data</th><th>testo</th><th class="text-right">reazioni</th><th class="text-right">click</th><th class="text-right">media view</th><th class="text-right">condivisioni</th><th class="text-right">engagement</th><th></th></tr></thead>
+     <tbody>${body || '<tr><td colspan="8" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
+  $("src-rows").textContent = posts.length;
+}
+
+function renderAll() {
+  renderPeriodTabs();
+  $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
+  renderKPIs();
+  renderChart();
+  renderPostsTable();
+}
+
+$("f-text").addEventListener("input", renderPostsTable);
+$("btn-reload").onclick = load;
+
+async function load() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    DATA = await r.json();
+    if (!DATA.posts.length && !DATA.page_insights.length) {
+      $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return;
+    }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    renderMetricPicker();
+    renderAll();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}

@@ -1,0 +1,206 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Instagram{% endblock %}
+{% block nav_instagram %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Instagram</h1>
+    <p class="text-sm opacity-60">Post organici (feed + reel) — nessuna sponsorizzazione</p>
+  </div>
+  <div class="grow"></div>
+  <div class="badge badge-lg badge-outline" id="pill-range">periodo: —</div>
+  <button class="btn btn-sm" id="btn-reload">Ricarica</button>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Nessun dato ancora. Serve una sync Airbyte completata (source-instagram-organic) e poi <code>manage.py import_airbyte</code>.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <div class="alert alert-info mb-6 text-sm">
+    <span>Il "reach" qui è la <strong>somma del reach per singolo post</strong> nel periodo, non il reach unico dell'account (persone diverse possono vedere più post) — Meta non ha ancora una metrica di reach account/mese sincronizzata; possiamo aggiungerla come sviluppo futuro.</span>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+    <div class="join" id="type-tabs">
+      <button class="btn btn-xs join-item" data-t="">Tutti</button>
+      <button class="btn btn-xs join-item" data-t="FEED">Feed</button>
+      <button class="btn btn-xs join-item" data-t="REELS">Reel</button>
+    </div>
+  </div>
+
+  <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="kpis"></div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Reach e interazioni nel tempo</h2>
+      <p class="text-sm opacity-60">Somma per data di pubblicazione, periodo selezionato.</p>
+      <div class="h-80 relative"><canvas id="chart-trend"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Post</h2>
+      <p class="text-sm opacity-60">Uno per riga, ordinati per data.</p>
+      <input type="text" id="f-text" placeholder="cerca nella didascalia…" class="input input-bordered input-sm w-full max-w-xs mb-3">
+      <div class="overflow-x-auto max-h-[520px]">
+        <table class="table table-zebra table-pin-rows table-sm" id="posts-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-xs opacity-50 mt-8">Fonte: database (Airbyte → Postgres, source-instagram-organic) · post: <span id="src-rows">0</span></p>
+</div>
+
+<script>const IG_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = IG_CFG.data_url;
+const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24"];
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+
+let DATA = null;
+let period = 30;
+let typeFilter = "";
+let chart = null;
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function inPeriod(date) {
+  if (period === "all") return true;
+  return date >= daysAgo(period);
+}
+
+function filteredPosts() {
+  return DATA.posts.filter(p => inPeriod(p.date) && (!typeFilter || p.type === typeFilter));
+}
+
+function renderPeriodTabs() {
+  const tabs = [[7, "7 giorni"], [30, "30 giorni"], [90, "90 giorni"], ["all", "Tutto"]];
+  $("period-tabs").innerHTML = tabs.map(([v, l]) =>
+    `<a class="tab ${v === period ? "tab-active" : ""}" data-v="${v}">${l}</a>`).join("");
+  $("period-tabs").querySelectorAll("a").forEach(b =>
+    b.onclick = () => { period = b.dataset.v === "all" ? "all" : Number(b.dataset.v); renderAll(); });
+}
+
+function renderTypeTabs() {
+  $("type-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.t === typeFilter);
+    b.onclick = () => { typeFilter = b.dataset.t; renderAll(); };
+  });
+}
+
+function renderKPIs() {
+  const posts = filteredPosts();
+  const sum = (k) => posts.reduce((s, p) => s + p[k], 0);
+  const defs = [
+    { name: "Post pubblicati", val: fmt(posts.length) },
+    { name: "Reach (somma post)", val: fmt(sum("reach")) },
+    { name: "Interazioni totali", val: fmt(sum("engagement")) },
+    { name: "Mi piace", val: fmt(sum("likes")) },
+    { name: "Commenti", val: fmt(sum("comments")) },
+    { name: "Salvataggi", val: fmt(sum("saved")) },
+    { name: "Condivisioni", val: fmt(sum("shares")) },
+  ];
+  $("kpis").innerHTML = defs.map(d => `
+    <div class="stat">
+      <div class="stat-title">${d.name}</div>
+      <div class="stat-value text-2xl">${d.val}</div>
+    </div>`).join("");
+}
+
+function renderChart() {
+  if (chart) chart.destroy();
+  const posts = filteredPosts();
+  const dates = [...new Set(posts.map(p => p.date))].sort();
+  if (!dates.length) return;
+  const byDate = (key) => {
+    const totals = {};
+    posts.forEach(p => { totals[p.date] = (totals[p.date] || 0) + p[key]; });
+    return dates.map(d => totals[d] || 0);
+  };
+  chart = new Chart($("chart-trend"), {
+    type: "line",
+    data: {
+      labels: dates,
+      datasets: [
+        { label: "Reach", data: byDate("reach"), borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25 },
+        { label: "Interazioni totali", data: byDate("engagement"), borderColor: PALETTE[1], backgroundColor: PALETTE[1], borderWidth: 2, pointRadius: 2, tension: .25 },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: { x: { grid: { color: "#e5e7eb" } }, y: { grid: { color: "#e5e7eb" }, beginAtZero: true } },
+      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } } },
+    },
+  });
+}
+
+function renderPostsTable() {
+  const ft = $("f-text").value.toLowerCase();
+  const posts = filteredPosts().filter(p => !ft || p.text.toLowerCase().includes(ft));
+  const body = posts.map(p => `
+    <tr>
+      <td>${p.thumbnail ? `<img src="${p.thumbnail}" class="w-10 h-10 object-cover rounded">` : ""}</td>
+      <td class="whitespace-nowrap">${p.date}</td>
+      <td><span class="badge badge-ghost badge-sm">${p.type}</span></td>
+      <td class="max-w-sm truncate" title="${(p.text || "").replace(/"/g, '&quot;')}">${p.text || '<span class="opacity-40">(nessuna didascalia)</span>'}</td>
+      <td class="text-right">${fmt(p.reach)}</td>
+      <td class="text-right">${fmt(p.likes)}</td>
+      <td class="text-right">${fmt(p.comments)}</td>
+      <td class="text-right">${fmt(p.saved)}</td>
+      <td class="text-right">${fmt(p.shares)}</td>
+      <td class="text-right font-semibold">${fmt(p.engagement)}</td>
+      <td>${p.permalink ? `<a href="${p.permalink}" target="_blank" rel="noopener" class="link link-primary">apri</a>` : "—"}</td>
+    </tr>`).join("");
+  $("posts-table").innerHTML =
+    `<thead><tr><th></th><th>data</th><th>tipo</th><th>didascalia</th><th class="text-right">reach</th><th class="text-right">mi piace</th><th class="text-right">commenti</th><th class="text-right">salvati</th><th class="text-right">condivisi</th><th class="text-right">interazioni</th><th></th></tr></thead>
+     <tbody>${body || '<tr><td colspan="11" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
+  $("src-rows").textContent = posts.length;
+}
+
+function renderAll() {
+  renderPeriodTabs();
+  renderTypeTabs();
+  $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
+  renderKPIs();
+  renderChart();
+  renderPostsTable();
+}
+
+$("f-text").addEventListener("input", renderPostsTable);
+$("btn-reload").onclick = load;
+
+async function load() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    DATA = await r.json();
+    if (!DATA.posts.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    renderAll();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}

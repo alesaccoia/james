@@ -1,0 +1,197 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Post Meta{% endblock %}
+{% block nav_meta_posts %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Post Meta</h1>
+    <p class="text-sm opacity-60">Facebook e Instagram insieme, un feed unico</p>
+  </div>
+  <div class="grow"></div>
+  <div class="badge badge-lg badge-outline" id="pill-range">periodo: —</div>
+  <button class="btn btn-sm" id="btn-reload">Ricarica</button>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Nessun dato ancora. Serve una sync Airbyte completata (Facebook Pages e/o Instagram) e poi <code>manage.py import_airbyte</code>.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <div class="alert alert-info mb-6 text-sm">
+    <span>Facebook e Instagram non sono automaticamente collegati qui — sono due publishing separati, mostrati insieme per comodità ma non abbinati post-per-post. Le metriche di engagement non sono direttamente confrontabili tra le due piattaforme (Facebook non ha più "reach"; Instagram sì — vedi le pagine dedicate per il dettaglio).</span>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+    <div class="join" id="platform-tabs">
+      <button class="btn btn-xs join-item" data-p="">Tutte</button>
+      <button class="btn btn-xs join-item" data-p="Facebook">Facebook</button>
+      <button class="btn btn-xs join-item" data-p="Instagram">Instagram</button>
+    </div>
+  </div>
+
+  <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="kpis"></div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Post pubblicati nel tempo</h2>
+      <p class="text-sm opacity-60">Numero di post per giorno, per piattaforma.</p>
+      <div class="h-72 relative"><canvas id="chart-volume"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Tutti i post</h2>
+      <p class="text-sm opacity-60">Ordinati per data. "Engagement" usa la definizione di ciascuna piattaforma (vedi pagine Facebook/Instagram).</p>
+      <input type="text" id="f-text" placeholder="cerca nel testo…" class="input input-bordered input-sm w-full max-w-xs mb-3">
+      <div class="overflow-x-auto max-h-[560px]">
+        <table class="table table-zebra table-pin-rows table-sm" id="posts-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-xs opacity-50 mt-8">Fonte: database (Airbyte → Postgres) · post: <span id="src-rows">0</span></p>
+</div>
+
+<script>const MP_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = MP_CFG.data_url;
+const PLATFORM_COLOR = { Facebook: "#5b9dff", Instagram: "#f472b6" };
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+
+let DATA = null;
+let period = 30;
+let platformFilter = "";
+let chart = null;
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function inPeriod(date) {
+  if (period === "all") return true;
+  return date >= daysAgo(period);
+}
+
+function filteredPosts() {
+  return DATA.posts.filter(p => inPeriod(p.date) && (!platformFilter || p.platform === platformFilter));
+}
+
+function renderPeriodTabs() {
+  const tabs = [[7, "7 giorni"], [30, "30 giorni"], [90, "90 giorni"], ["all", "Tutto"]];
+  $("period-tabs").innerHTML = tabs.map(([v, l]) =>
+    `<a class="tab ${v === period ? "tab-active" : ""}" data-v="${v}">${l}</a>`).join("");
+  $("period-tabs").querySelectorAll("a").forEach(b =>
+    b.onclick = () => { period = b.dataset.v === "all" ? "all" : Number(b.dataset.v); renderAll(); });
+}
+
+function renderPlatformTabs() {
+  $("platform-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.p === platformFilter);
+    b.onclick = () => { platformFilter = b.dataset.p; renderAll(); };
+  });
+}
+
+function renderKPIs() {
+  const posts = filteredPosts();
+  const fb = posts.filter(p => p.platform === "Facebook").length;
+  const ig = posts.filter(p => p.platform === "Instagram").length;
+  const defs = [
+    { name: "Post totali", val: fmt(posts.length) },
+    { name: "Post Facebook", val: fmt(fb) },
+    { name: "Post Instagram", val: fmt(ig) },
+    { name: "Engagement totale", val: fmt(posts.reduce((s, p) => s + p.engagement, 0)) },
+  ];
+  $("kpis").innerHTML = defs.map(d => `
+    <div class="stat">
+      <div class="stat-title">${d.name}</div>
+      <div class="stat-value text-2xl">${d.val}</div>
+    </div>`).join("");
+}
+
+function renderChart() {
+  if (chart) chart.destroy();
+  const posts = filteredPosts();
+  const dates = [...new Set(posts.map(p => p.date))].sort();
+  if (!dates.length) return;
+  const platforms = platformFilter ? [platformFilter] : ["Facebook", "Instagram"];
+  const datasets = platforms.map(pl => {
+    const counts = {};
+    posts.filter(p => p.platform === pl).forEach(p => { counts[p.date] = (counts[p.date] || 0) + 1; });
+    return {
+      label: pl, data: dates.map(d => counts[d] || 0),
+      backgroundColor: PLATFORM_COLOR[pl], borderRadius: 2,
+    };
+  });
+  chart = new Chart($("chart-volume"), {
+    type: "bar",
+    data: { labels: dates, datasets },
+    options: {
+      maintainAspectRatio: false,
+      scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, grid: { color: "#e5e7eb" }, beginAtZero: true, ticks: { precision: 0 } } },
+      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } } },
+    },
+  });
+}
+
+function renderPostsTable() {
+  const ft = $("f-text").value.toLowerCase();
+  const posts = filteredPosts().filter(p => !ft || p.text.toLowerCase().includes(ft));
+  const body = posts.map(p => `
+    <tr>
+      <td><span class="badge badge-sm" style="background:${PLATFORM_COLOR[p.platform]};color:#fff;border:none">${p.platform}</span></td>
+      <td class="whitespace-nowrap">${p.date}</td>
+      <td><span class="badge badge-ghost badge-sm">${p.type}</span></td>
+      <td class="max-w-sm truncate" title="${(p.text || "").replace(/"/g, '&quot;')}">${p.text || '<span class="opacity-40">(vuoto)</span>'}</td>
+      <td class="text-right font-semibold">${fmt(p.engagement)}</td>
+      <td>${p.permalink ? `<a href="${p.permalink}" target="_blank" rel="noopener" class="link link-primary">apri</a>` : "—"}</td>
+    </tr>`).join("");
+  $("posts-table").innerHTML =
+    `<thead><tr><th>piattaforma</th><th>data</th><th>tipo</th><th>testo</th><th class="text-right">engagement</th><th></th></tr></thead>
+     <tbody>${body || '<tr><td colspan="6" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
+  $("src-rows").textContent = posts.length;
+}
+
+function renderAll() {
+  renderPeriodTabs();
+  renderPlatformTabs();
+  $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
+  renderKPIs();
+  renderChart();
+  renderPostsTable();
+}
+
+$("f-text").addEventListener("input", renderPostsTable);
+$("btn-reload").onclick = load;
+
+async function load() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    DATA = await r.json();
+    if (!DATA.posts.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    renderAll();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}

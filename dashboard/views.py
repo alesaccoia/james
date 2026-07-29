@@ -85,6 +85,195 @@ def data_marketing(request):
     return JsonResponse({'rows': rows})
 
 
+# -------------------------------------------------------------- Meta organic
+# Facebook Page + Instagram Business Account organic content, via the
+# 'source-facebook-pages' / 'source-instagram-organic' Airbyte connectors
+# (see docs/airbyte-*-connector/README.md in wundt).
+
+FB_PAGE_METRIC_LABELS = {
+    'page_total_actions': 'Azioni sulla pagina',
+    'page_post_engagements': 'Interazioni sui post',
+    'page_fan_adds_by_paid_non_paid_unique': 'Nuovi follower (netti)',
+    'page_media_view': 'Visualizzazioni media',
+    'page_views_total': 'Visite alla pagina',
+    'page_video_views': 'Visualizzazioni video',
+}
+
+IG_METRIC_LABELS = {
+    'reach': 'Reach',
+    'total_interactions': 'Interazioni totali',
+    'likes': 'Mi piace',
+    'comments': 'Commenti',
+    'saved': 'Salvataggi',
+    'shares': 'Condivisioni',
+}
+
+
+def _meta_insight_value(v):
+    """A Meta insights 'values' entry's value is usually a number, but some
+    metrics (e.g. post_reactions_by_type_total) return an object of
+    {reaction_type: count} instead - summed into one total either way."""
+    val = v.get('value')
+    if isinstance(val, dict):
+        return sum(_num(x) for x in val.values())
+    return _num(val)
+
+
+def _meta_insight_rows(stream):
+    """Flatten a Meta page/account-level insights stream (one row per
+    metric, each holding a 'values' time series) into flat
+    {metric, date, value} rows."""
+    rows = []
+    for d in _stream_rows(stream):
+        metric = d.get('name')
+        for v in (d.get('values') or []):
+            date = str(v.get('end_time') or '')[:10]
+            if not date:
+                continue
+            rows.append({'metric': metric, 'date': date, 'value': _meta_insight_value(v)})
+    return rows
+
+
+def _meta_parent_id_from_insight_id(insight_id):
+    """post_insights/ig_media_insights ids look like '{post_or_media_id}/insights/{metric}/{period}'."""
+    return (insight_id or '').split('/insights/')[0]
+
+
+def _facebook_posts():
+    """One row per Facebook post, with its post_insights metrics summed in
+    (post_insights is per-metric, so several raw rows collapse into one)."""
+    metrics_by_post = {}
+    for d in _stream_rows('mentor_meta_pages_post_insights'):
+        post_id = _meta_parent_id_from_insight_id(d.get('id'))
+        metric = d.get('name')
+        total = sum(_meta_insight_value(v) for v in (d.get('values') or []))
+        metrics_by_post.setdefault(post_id, {})[metric] = metrics_by_post.setdefault(post_id, {}).get(metric, 0) + total
+
+    posts = []
+    for d in _stream_rows('mentor_meta_pages_post'):
+        pid = d.get('id')
+        date = str(d.get('created_time') or '')[:10]
+        if not date:
+            continue
+        m = metrics_by_post.get(pid, {})
+        shares = _num((d.get('shares') or {}).get('count'))
+        clicks = m.get('post_clicks', 0)
+        reactions = m.get('post_reactions_by_type_total', 0)
+        posts.append({
+            'id': pid,
+            'date': date,
+            'text': (d.get('message') or d.get('story') or '')[:280],
+            'permalink': d.get('permalink_url'),
+            'type': d.get('status_type') or 'post',
+            'shares': shares,
+            'media_view': m.get('post_media_view', 0),
+            'clicks': clicks,
+            'reactions': reactions,
+            'engagement': shares + clicks + reactions,
+        })
+    posts.sort(key=lambda p: p['date'], reverse=True)
+    return posts
+
+
+def _instagram_posts():
+    """One row per Instagram media item, with its ig_media_insights metrics
+    summed in (insights is per-metric, so several raw rows collapse into one)."""
+    metrics_by_media = {}
+    for d in _stream_rows('mentor_ig_page_ig_media_insights'):
+        media_id = _meta_parent_id_from_insight_id(d.get('id'))
+        metric = d.get('name')
+        total = sum(_meta_insight_value(v) for v in (d.get('values') or []))
+        metrics_by_media.setdefault(media_id, {})[metric] = metrics_by_media.setdefault(media_id, {}).get(metric, 0) + total
+
+    posts = []
+    for d in _stream_rows('mentor_ig_page_ig_media'):
+        mid = d.get('id')
+        date = str(d.get('timestamp') or '')[:10]
+        if not date:
+            continue
+        m = metrics_by_media.get(mid, {})
+        posts.append({
+            'id': mid,
+            'date': date,
+            'text': (d.get('caption') or '')[:280],
+            'permalink': d.get('permalink'),
+            'type': d.get('media_product_type') or d.get('media_type') or 'post',
+            'thumbnail': d.get('thumbnail_url') or d.get('media_url'),
+            'reach': m.get('reach', 0),
+            'likes': m.get('likes', d.get('like_count') or 0),
+            'comments': m.get('comments', d.get('comments_count') or 0),
+            'saved': m.get('saved', 0),
+            'shares': m.get('shares', 0),
+            'engagement': m.get('total_interactions', 0),
+        })
+    posts.sort(key=lambda p: p['date'], reverse=True)
+    return posts
+
+
+@login_required
+def facebook_page(request):
+    streams = ['mentor_meta_pages_page', 'mentor_meta_pages_post',
+               'mentor_meta_pages_post_insights', 'mentor_meta_pages_page_insights']
+    cfg = {'data_url': reverse('dashboard:data_facebook'), 'metric_labels': FB_PAGE_METRIC_LABELS}
+    return render(request, 'dashboard/facebook.html', {
+        'cfg_json': json.dumps(cfg),
+        'has_data': AirbyteRecord.objects.filter(stream__in=streams).exists(),
+    })
+
+
+@login_required
+def data_facebook(request):
+    page_rows = list(_stream_rows('mentor_meta_pages_page'))
+    page = page_rows[0] if page_rows else None
+    page_profile = None
+    if page:
+        page_profile = {
+            'name': page.get('name'),
+            'fan_count': _num(page.get('fan_count')),
+            'followers_count': _num(page.get('followers_count')),
+            'category': page.get('category'),
+            'link': page.get('link'),
+        }
+    return JsonResponse({
+        'page': page_profile,
+        'page_insights': _meta_insight_rows('mentor_meta_pages_page_insights'),
+        'posts': _facebook_posts(),
+    })
+
+
+@login_required
+def instagram_page(request):
+    streams = ['mentor_ig_page_ig_media', 'mentor_ig_page_ig_media_insights']
+    cfg = {'data_url': reverse('dashboard:data_instagram'), 'metric_labels': IG_METRIC_LABELS}
+    return render(request, 'dashboard/instagram.html', {
+        'cfg_json': json.dumps(cfg),
+        'has_data': AirbyteRecord.objects.filter(stream__in=streams).exists(),
+    })
+
+
+@login_required
+def data_instagram(request):
+    return JsonResponse({'posts': _instagram_posts()})
+
+
+@login_required
+def meta_posts(request):
+    streams = ['mentor_meta_pages_post', 'mentor_ig_page_ig_media']
+    cfg = {'data_url': reverse('dashboard:data_meta_posts')}
+    return render(request, 'dashboard/meta_posts.html', {
+        'cfg_json': json.dumps(cfg),
+        'has_data': AirbyteRecord.objects.filter(stream__in=streams).exists(),
+    })
+
+
+@login_required
+def data_meta_posts(request):
+    rows = [{**p, 'platform': 'Facebook'} for p in _facebook_posts()] + \
+           [{**p, 'platform': 'Instagram'} for p in _instagram_posts()]
+    rows.sort(key=lambda r: r['date'], reverse=True)
+    return JsonResponse({'posts': rows})
+
+
 # ------------------------------------------------------------ Google Analytics
 
 @login_required

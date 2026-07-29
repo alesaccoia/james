@@ -47,6 +47,12 @@ NATURAL_KEYS = {
     'ga_demographic_city_report': lambda d: f"{d.get('date')}|{d.get('city')}",
     'mentor_leads': lambda d: d.get('id'),
     'mentor_lead_status_events': lambda d: d.get('id'),
+    'mentor_meta_pages_page': lambda d: d.get('id'),
+    'mentor_meta_pages_post': lambda d: d.get('id'),
+    'mentor_meta_pages_post_insights': lambda d: d.get('id'),
+    'mentor_meta_pages_page_insights': lambda d: d.get('id'),
+    'mentor_ig_page_ig_media': lambda d: d.get('id'),
+    'mentor_ig_page_ig_media_insights': lambda d: d.get('id'),
 }
 
 META_COLS = {'_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_meta', '_airbyte_generation_id'}
