@@ -20,7 +20,7 @@
 <div id="content" class="hidden">
 
   <div class="alert alert-info mb-6 text-sm">
-    <span>Il "reach" qui è la <strong>somma del reach per singolo post</strong> nel periodo, non il reach unico dell'account (persone diverse possono vedere più post) — Meta non ha ancora una metrica di reach account/mese sincronizzata; possiamo aggiungerla come sviluppo futuro.</span>
+    <span>Il "reach" qui è la <strong>somma del reach per singolo post</strong> nel periodo, non il reach unico dell'account (persone diverse possono vedere più post) — Meta non ha ancora una metrica di reach account/mese sincronizzata; possiamo aggiungerla come sviluppo futuro. Il tasso di engagement è quindi calcolato sullo stesso reach cumulato, non su un reach account deduplicato.</span>
   </div>
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
@@ -36,8 +36,16 @@
 
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">
-      <h2 class="card-title">Reach e interazioni nel tempo</h2>
-      <p class="text-sm opacity-60">Somma per data di pubblicazione, periodo selezionato.</p>
+      <h2 class="card-title">Reach, interazioni e tasso di engagement nel tempo</h2>
+      <div class="flex flex-wrap items-center gap-4 mb-1">
+        <p class="text-sm opacity-60">Somma per data di pubblicazione, periodo selezionato.</p>
+        <div class="grow"></div>
+        <div class="join" id="group-tabs">
+          <button class="btn btn-xs join-item" data-g="day">Giorno</button>
+          <button class="btn btn-xs join-item" data-g="week">Settimana</button>
+          <button class="btn btn-xs join-item" data-g="month">Mese</button>
+        </div>
+      </div>
       <div class="h-80 relative"><canvas id="chart-trend"></canvas></div>
     </div>
   </div>
@@ -45,7 +53,7 @@
   <div class="card bg-base-100 shadow">
     <div class="card-body">
       <h2 class="card-title">Post</h2>
-      <p class="text-sm opacity-60">Uno per riga, ordinati per data.</p>
+      <p class="text-sm opacity-60">Uno per riga, ordinati per data. Tasso di engagement = interazioni totali / reach.</p>
       <input type="text" id="f-text" placeholder="cerca nella didascalia…" class="input input-bordered input-sm w-full max-w-xs mb-3">
       <div class="overflow-x-auto max-h-[520px]">
         <table class="table table-zebra table-pin-rows table-sm" id="posts-table"></table>
@@ -63,22 +71,19 @@
 
 const DATA_URL = IG_CFG.data_url;
 const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24"];
+const { daysAgo, todayStr, bucketOf, continuousBuckets, renderGroupTabs } = TimeSeries;
 
 const $ = (id) => document.getElementById(id);
 const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
 const fmt = (v) => v == null ? "—" : fmtN.format(v);
+const fmtPct = (v) => v == null ? "N/D" : fmtN.format(v) + "%";
+const engRate = (engagement, reach) => reach ? (engagement / reach * 100) : null;
 
 let DATA = null;
 let period = 30;
+let groupBy = "day";
 let typeFilter = "";
 let chart = null;
-
-function daysAgo(n) {
-  const d = new Date();
-  d.setUTCHours(0, 0, 0, 0);
-  d.setUTCDate(d.getUTCDate() - n);
-  return d.toISOString().slice(0, 10);
-}
 
 function inPeriod(date) {
   if (period === "all") return true;
@@ -107,10 +112,13 @@ function renderTypeTabs() {
 function renderKPIs() {
   const posts = filteredPosts();
   const sum = (k) => posts.reduce((s, p) => s + p[k], 0);
+  const totalReach = sum("reach");
+  const totalEngagement = sum("engagement");
   const defs = [
     { name: "Post pubblicati", val: fmt(posts.length) },
-    { name: "Reach (somma post)", val: fmt(sum("reach")) },
-    { name: "Interazioni totali", val: fmt(sum("engagement")) },
+    { name: "Reach (somma post)", val: fmt(totalReach) },
+    { name: "Interazioni totali", val: fmt(totalEngagement) },
+    { name: "Tasso di engagement (su reach)", val: fmtPct(engRate(totalEngagement, totalReach)) },
     { name: "Mi piace", val: fmt(sum("likes")) },
     { name: "Commenti", val: fmt(sum("comments")) },
     { name: "Salvataggi", val: fmt(sum("saved")) },
@@ -126,26 +134,44 @@ function renderKPIs() {
 function renderChart() {
   if (chart) chart.destroy();
   const posts = filteredPosts();
-  const dates = [...new Set(posts.map(p => p.date))].sort();
-  if (!dates.length) return;
-  const byDate = (key) => {
+  const rangeStart = period === "all"
+    ? (posts.map(p => p.date).sort()[0] || todayStr())
+    : daysAgo(period);
+  const buckets = continuousBuckets(rangeStart, groupBy);
+  if (!buckets.length) return;
+
+  const byBucket = (key) => {
     const totals = {};
-    posts.forEach(p => { totals[p.date] = (totals[p.date] || 0) + p[key]; });
-    return dates.map(d => totals[d] || 0);
+    posts.forEach(p => { const b = bucketOf(p.date, groupBy); totals[b] = (totals[b] || 0) + p[key]; });
+    return buckets.map(b => totals[b] || 0);
   };
+  const reachSeries = byBucket("reach");
+  const engagementSeries = byBucket("engagement");
+  const rateSeries = buckets.map((b, i) => reachSeries[i] ? (engagementSeries[i] / reachSeries[i] * 100) : null);
+
   chart = new Chart($("chart-trend"), {
     type: "line",
     data: {
-      labels: dates,
+      labels: buckets,
       datasets: [
-        { label: "Reach", data: byDate("reach"), borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25 },
-        { label: "Interazioni totali", data: byDate("engagement"), borderColor: PALETTE[1], backgroundColor: PALETTE[1], borderWidth: 2, pointRadius: 2, tension: .25 },
+        { label: "Reach", data: reachSeries, borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y" },
+        { label: "Interazioni totali", data: engagementSeries, borderColor: PALETTE[1], backgroundColor: PALETTE[1], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y" },
+        { label: "Tasso di engagement", data: rateSeries, borderColor: PALETTE[2], backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 2, tension: .25, borderDash: [4, 3], yAxisID: "y1" },
       ],
     },
     options: {
       maintainAspectRatio: false,
-      scales: { x: { grid: { color: "#e5e7eb" } }, y: { grid: { color: "#e5e7eb" }, beginAtZero: true } },
-      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } } },
+      scales: {
+        x: { grid: { color: "#e5e7eb" } },
+        y: { position: "left", beginAtZero: true, grid: { color: "#e5e7eb" } },
+        y1: { position: "right", beginAtZero: true, grid: { display: false }, ticks: { callback: v => v + "%" } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
+        tooltip: { callbacks: { label: ctx => ctx.dataset.yAxisID === "y1"
+          ? ` ${ctx.dataset.label}: ${ctx.parsed.y == null ? "N/D" : fmtN.format(ctx.parsed.y) + "%"}`
+          : ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}` } },
+      },
     },
   });
 }
@@ -165,17 +191,19 @@ function renderPostsTable() {
       <td class="text-right">${fmt(p.saved)}</td>
       <td class="text-right">${fmt(p.shares)}</td>
       <td class="text-right font-semibold">${fmt(p.engagement)}</td>
+      <td class="text-right">${fmtPct(engRate(p.engagement, p.reach))}</td>
       <td>${p.permalink ? `<a href="${p.permalink}" target="_blank" rel="noopener" class="link link-primary">apri</a>` : "—"}</td>
     </tr>`).join("");
   $("posts-table").innerHTML =
-    `<thead><tr><th></th><th>data</th><th>tipo</th><th>didascalia</th><th class="text-right">reach</th><th class="text-right">mi piace</th><th class="text-right">commenti</th><th class="text-right">salvati</th><th class="text-right">condivisi</th><th class="text-right">interazioni</th><th></th></tr></thead>
-     <tbody>${body || '<tr><td colspan="11" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
+    `<thead><tr><th></th><th>data</th><th>tipo</th><th>didascalia</th><th class="text-right">reach</th><th class="text-right">mi piace</th><th class="text-right">commenti</th><th class="text-right">salvati</th><th class="text-right">condivisi</th><th class="text-right">interazioni</th><th class="text-right">tasso engagement</th><th></th></tr></thead>
+     <tbody>${body || '<tr><td colspan="12" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
   $("src-rows").textContent = posts.length;
 }
 
 function renderAll() {
   renderPeriodTabs();
   renderTypeTabs();
+  renderGroupTabs($("group-tabs"), groupBy, (g) => { groupBy = g; renderAll(); });
   $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
   renderKPIs();
   renderChart();

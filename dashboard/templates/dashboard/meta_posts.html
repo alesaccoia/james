@@ -20,7 +20,7 @@
 <div id="content" class="hidden">
 
   <div class="alert alert-info mb-6 text-sm">
-    <span>Facebook e Instagram non sono automaticamente collegati qui — sono due publishing separati, mostrati insieme per comodità ma non abbinati post-per-post. Le metriche di engagement non sono direttamente confrontabili tra le due piattaforme (Facebook non ha più "reach"; Instagram sì — vedi le pagine dedicate per il dettaglio).</span>
+    <span>Facebook e Instagram non sono automaticamente collegati qui — sono due publishing separati, mostrati insieme per comodità ma non abbinati post-per-post. Il <strong>tasso di engagement</strong> è calcolato solo sui post con reach disponibile (oggi solo Instagram — Facebook non fornisce più reach per le Pagine, vedi la pagina Facebook per il dettaglio).</span>
   </div>
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
@@ -37,7 +37,15 @@
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">
       <h2 class="card-title">Post pubblicati nel tempo</h2>
-      <p class="text-sm opacity-60">Numero di post per giorno, per piattaforma.</p>
+      <div class="flex flex-wrap items-center gap-4 mb-1">
+        <p class="text-sm opacity-60">Include i giorni senza pubblicazioni, per piattaforma.</p>
+        <div class="grow"></div>
+        <div class="join" id="group-tabs">
+          <button class="btn btn-xs join-item" data-g="day">Giorno</button>
+          <button class="btn btn-xs join-item" data-g="week">Settimana</button>
+          <button class="btn btn-xs join-item" data-g="month">Mese</button>
+        </div>
+      </div>
       <div class="h-72 relative"><canvas id="chart-volume"></canvas></div>
     </div>
   </div>
@@ -63,22 +71,19 @@
 
 const DATA_URL = MP_CFG.data_url;
 const PLATFORM_COLOR = { Facebook: "#5b9dff", Instagram: "#f472b6" };
+const { daysAgo, todayStr, bucketOf, continuousBuckets, renderGroupTabs } = TimeSeries;
 
 const $ = (id) => document.getElementById(id);
 const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
 const fmt = (v) => v == null ? "—" : fmtN.format(v);
+const fmtPct = (v) => v == null ? "N/D" : fmtN.format(v) + "%";
+const engRate = (engagement, reach) => (reach == null || !reach) ? null : (engagement / reach * 100);
 
 let DATA = null;
 let period = 30;
+let groupBy = "day";
 let platformFilter = "";
 let chart = null;
-
-function daysAgo(n) {
-  const d = new Date();
-  d.setUTCHours(0, 0, 0, 0);
-  d.setUTCDate(d.getUTCDate() - n);
-  return d.toISOString().slice(0, 10);
-}
 
 function inPeriod(date) {
   if (period === "all") return true;
@@ -108,11 +113,15 @@ function renderKPIs() {
   const posts = filteredPosts();
   const fb = posts.filter(p => p.platform === "Facebook").length;
   const ig = posts.filter(p => p.platform === "Instagram").length;
+  const withReach = posts.filter(p => p.reach != null);
+  const totalReach = withReach.reduce((s, p) => s + p.reach, 0);
+  const engagementOnReach = withReach.reduce((s, p) => s + p.engagement, 0);
   const defs = [
     { name: "Post totali", val: fmt(posts.length) },
     { name: "Post Facebook", val: fmt(fb) },
     { name: "Post Instagram", val: fmt(ig) },
     { name: "Engagement totale", val: fmt(posts.reduce((s, p) => s + p.engagement, 0)) },
+    { name: "Tasso di engagement (su reach, solo IG)", val: fmtPct(engRate(engagementOnReach, totalReach)) },
   ];
   $("kpis").innerHTML = defs.map(d => `
     <div class="stat">
@@ -124,20 +133,26 @@ function renderKPIs() {
 function renderChart() {
   if (chart) chart.destroy();
   const posts = filteredPosts();
-  const dates = [...new Set(posts.map(p => p.date))].sort();
-  if (!dates.length) return;
+  const rangeStart = period === "all"
+    ? (posts.map(p => p.date).sort()[0] || todayStr())
+    : daysAgo(period);
+  const buckets = continuousBuckets(rangeStart, groupBy);
+  if (!buckets.length) return;
   const platforms = platformFilter ? [platformFilter] : ["Facebook", "Instagram"];
   const datasets = platforms.map(pl => {
     const counts = {};
-    posts.filter(p => p.platform === pl).forEach(p => { counts[p.date] = (counts[p.date] || 0) + 1; });
+    posts.filter(p => p.platform === pl).forEach(p => {
+      const b = bucketOf(p.date, groupBy);
+      counts[b] = (counts[b] || 0) + 1;
+    });
     return {
-      label: pl, data: dates.map(d => counts[d] || 0),
+      label: pl, data: buckets.map(b => counts[b] || 0),
       backgroundColor: PLATFORM_COLOR[pl], borderRadius: 2,
     };
   });
   chart = new Chart($("chart-volume"), {
     type: "bar",
-    data: { labels: dates, datasets },
+    data: { labels: buckets, datasets },
     options: {
       maintainAspectRatio: false,
       scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, grid: { color: "#e5e7eb" }, beginAtZero: true, ticks: { precision: 0 } } },
@@ -155,18 +170,21 @@ function renderPostsTable() {
       <td class="whitespace-nowrap">${p.date}</td>
       <td><span class="badge badge-ghost badge-sm">${p.type}</span></td>
       <td class="max-w-sm truncate" title="${(p.text || "").replace(/"/g, '&quot;')}">${p.text || '<span class="opacity-40">(vuoto)</span>'}</td>
+      <td class="text-right">${fmt(p.reach)}</td>
       <td class="text-right font-semibold">${fmt(p.engagement)}</td>
+      <td class="text-right">${fmtPct(engRate(p.engagement, p.reach))}</td>
       <td>${p.permalink ? `<a href="${p.permalink}" target="_blank" rel="noopener" class="link link-primary">apri</a>` : "—"}</td>
     </tr>`).join("");
   $("posts-table").innerHTML =
-    `<thead><tr><th>piattaforma</th><th>data</th><th>tipo</th><th>testo</th><th class="text-right">engagement</th><th></th></tr></thead>
-     <tbody>${body || '<tr><td colspan="6" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
+    `<thead><tr><th>piattaforma</th><th>data</th><th>tipo</th><th>testo</th><th class="text-right">reach</th><th class="text-right">engagement</th><th class="text-right">tasso engagement</th><th></th></tr></thead>
+     <tbody>${body || '<tr><td colspan="8" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
   $("src-rows").textContent = posts.length;
 }
 
 function renderAll() {
   renderPeriodTabs();
   renderPlatformTabs();
+  renderGroupTabs($("group-tabs"), groupBy, (g) => { groupBy = g; renderAll(); });
   $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
   renderKPIs();
   renderChart();

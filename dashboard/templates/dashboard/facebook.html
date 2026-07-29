@@ -20,7 +20,7 @@
 <div id="content" class="hidden">
 
   <div class="alert alert-warning mb-6 text-sm">
-    <span>Meta ha deprecato tutte le metriche di <strong>reach</strong> per le Pagine Facebook (a livello pagina e a livello post) — non più disponibili via API, in nessuna versione recente. I dati sotto sono i migliori indicatori di copertura/engagement rimasti: azioni sulla pagina, interazioni, visualizzazioni, visite, follower netti.</span>
+    <span>Meta ha deprecato tutte le metriche di <strong>reach</strong> per le Pagine Facebook (a livello pagina e a livello post) — non più disponibili via API, in nessuna versione recente. Il "tasso di engagement" qui sotto è quindi N/D: senza reach non è calcolabile in modo corretto (non lo stimiamo su un proxy). I dati sotto sono i migliori indicatori di copertura/engagement rimasti.</span>
   </div>
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
@@ -32,8 +32,15 @@
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">
       <h2 class="card-title">Pagina nel tempo</h2>
-      <p class="text-sm opacity-60">Metriche giornaliere della pagina, periodo selezionato.</p>
-      <div class="flex flex-wrap gap-3 mb-2" id="metric-picker"></div>
+      <div class="flex flex-wrap items-center gap-4 mb-1">
+        <div class="flex flex-wrap gap-3" id="metric-picker"></div>
+        <div class="grow"></div>
+        <div class="join" id="group-tabs">
+          <button class="btn btn-xs join-item" data-g="day">Giorno</button>
+          <button class="btn btn-xs join-item" data-g="week">Settimana</button>
+          <button class="btn btn-xs join-item" data-g="month">Mese</button>
+        </div>
+      </div>
       <div class="h-80 relative"><canvas id="chart-page"></canvas></div>
     </div>
   </div>
@@ -60,22 +67,18 @@
 const DATA_URL = FB_CFG.data_url;
 const METRIC_LABELS = FB_CFG.metric_labels;
 const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171"];
+const { daysAgo, todayStr, bucketOf, continuousBuckets, renderGroupTabs } = TimeSeries;
 
 const $ = (id) => document.getElementById(id);
 const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
 const fmt = (v) => v == null ? "—" : fmtN.format(v);
+const fmtPct = (v) => v == null ? "N/D" : fmtN.format(v) + "%";
 
 let DATA = null;
 let period = 30;
+let groupBy = "day";
 let selectedMetrics = new Set(["page_total_actions", "page_post_engagements"]);
 let chart = null;
-
-function daysAgo(n) {
-  const d = new Date();
-  d.setUTCHours(0, 0, 0, 0);
-  d.setUTCDate(d.getUTCDate() - n);
-  return d.toISOString().slice(0, 10);
-}
 
 function inPeriod(date) {
   if (period === "all") return true;
@@ -99,13 +102,14 @@ function renderKPIs() {
   const defs = [
     { name: "Post pubblicati", val: fmt(posts.length) },
     { name: "Engagement sui post", val: fmt(totalEngagement) },
+    { name: "Tasso di engagement (su reach)", val: "N/D", hint: "Facebook non fornisce più reach per le Pagine" },
     ...Object.entries(METRIC_LABELS).map(([k, label]) => ({ name: label, val: fmt(sum(k)) })),
   ];
   if (DATA.page) {
     defs.unshift({ name: "Follower (ultimo dato)", val: fmt(DATA.page.followers_count || DATA.page.fan_count) });
   }
   $("kpis").innerHTML = defs.map(d => `
-    <div class="stat">
+    <div class="stat" ${d.hint ? `title="${d.hint}"` : ""}>
       <div class="stat-title">${d.name}</div>
       <div class="stat-value text-2xl">${d.val}</div>
     </div>`).join("");
@@ -127,17 +131,23 @@ function renderMetricPicker() {
 
 function renderChart() {
   if (chart) chart.destroy();
-  const rows = DATA.page_insights.filter(r => inPeriod(r.date));
-  const dates = [...new Set(rows.map(r => r.date))].sort();
+  const rangeStart = period === "all"
+    ? (DATA.page_insights.map(r => r.date).sort()[0] || todayStr())
+    : daysAgo(period);
+  const buckets = continuousBuckets(rangeStart, groupBy);
   const metrics = Object.keys(METRIC_LABELS).filter(m => selectedMetrics.has(m));
-  if (!dates.length || !metrics.length) return;
+  if (!buckets.length || !metrics.length) return;
 
+  const rows = DATA.page_insights.filter(r => inPeriod(r.date));
   const datasets = metrics.map((m, i) => {
-    const byDate = {};
-    rows.filter(r => r.metric === m).forEach(r => { byDate[r.date] = r.value; });
+    const byBucket = {};
+    rows.filter(r => r.metric === m).forEach(r => {
+      const b = bucketOf(r.date, groupBy);
+      byBucket[b] = (byBucket[b] || 0) + r.value;
+    });
     return {
       label: METRIC_LABELS[m],
-      data: dates.map(d => byDate[d] || 0),
+      data: buckets.map(b => byBucket[b] || 0),
       borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length],
       borderWidth: 2, pointRadius: 2, tension: .25,
     };
@@ -145,7 +155,7 @@ function renderChart() {
 
   chart = new Chart($("chart-page"), {
     type: "line",
-    data: { labels: dates, datasets },
+    data: { labels: buckets, datasets },
     options: {
       maintainAspectRatio: false,
       scales: { x: { grid: { color: "#e5e7eb" } }, y: { grid: { color: "#e5e7eb" }, beginAtZero: true } },
@@ -166,16 +176,18 @@ function renderPostsTable() {
       <td class="text-right">${fmt(p.media_view)}</td>
       <td class="text-right">${fmt(p.shares)}</td>
       <td class="text-right font-semibold">${fmt(p.engagement)}</td>
+      <td class="text-right opacity-50" title="Facebook non fornisce reach per le Pagine">N/D</td>
       <td>${p.permalink ? `<a href="${p.permalink}" target="_blank" rel="noopener" class="link link-primary">apri</a>` : "—"}</td>
     </tr>`).join("");
   $("posts-table").innerHTML =
-    `<thead><tr><th>data</th><th>testo</th><th class="text-right">reazioni</th><th class="text-right">click</th><th class="text-right">media view</th><th class="text-right">condivisioni</th><th class="text-right">engagement</th><th></th></tr></thead>
-     <tbody>${body || '<tr><td colspan="8" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
+    `<thead><tr><th>data</th><th>testo</th><th class="text-right">reazioni</th><th class="text-right">click</th><th class="text-right">media view</th><th class="text-right">condivisioni</th><th class="text-right">engagement</th><th class="text-right">tasso su reach</th><th></th></tr></thead>
+     <tbody>${body || '<tr><td colspan="9" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
   $("src-rows").textContent = posts.length;
 }
 
 function renderAll() {
   renderPeriodTabs();
+  renderGroupTabs($("group-tabs"), groupBy, (g) => { groupBy = g; renderAll(); });
   $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
   renderKPIs();
   renderChart();

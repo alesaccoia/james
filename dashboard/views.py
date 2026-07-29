@@ -170,6 +170,7 @@ def _facebook_posts():
             'clicks': clicks,
             'reactions': reactions,
             'engagement': shares + clicks + reactions,
+            'reach': None,  # Meta has no page/post-level reach metric left for Facebook Pages
         })
     posts.sort(key=lambda p: p['date'], reverse=True)
     return posts

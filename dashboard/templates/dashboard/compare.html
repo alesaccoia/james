@@ -26,6 +26,11 @@
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
     <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+    <div class="join" id="group-tabs">
+      <button class="btn btn-sm join-item" data-g="day">Giorno</button>
+      <button class="btn btn-sm join-item" data-g="week">Settimana</button>
+      <button class="btn btn-sm join-item" data-g="month">Mese</button>
+    </div>
     <div class="join">
       <button class="btn btn-sm join-item" id="btn-mode-abs">Valori assoluti</button>
       <button class="btn btn-sm join-item" id="btn-mode-norm">Normalizzato (indice 100)</button>
@@ -86,19 +91,25 @@ let SERIES = {}; // key -> [{date, value}]
 let EVENTS = [];
 let selected = new Set(METRIC_KEYS.slice(0, 3));
 let period = 30;
+let groupBy = "day";
 let mode = "abs"; // abs | norm
 let chart = null;
-
-function daysAgo(n) {
-  const d = new Date();
-  d.setUTCHours(0, 0, 0, 0);
-  d.setUTCDate(d.getUTCDate() - n);
-  return d.toISOString().slice(0, 10);
-}
+const { daysAgo, todayStr, bucketOf, continuousBuckets, renderGroupTabs } = TimeSeries;
 
 function filteredSeries(key) {
   const since = period === "all" ? null : daysAgo(period);
   return (SERIES[key] || []).filter(p => !since || p.date >= since);
+}
+
+// Sum raw daily points into day/week/month buckets - every metric in this
+// registry is either a count or a euro total, so summing is correct either way.
+function bucketedSeries(key) {
+  const byBucket = {};
+  filteredSeries(key).forEach(p => {
+    const b = bucketOf(p.date, groupBy);
+    byBucket[b] = (byBucket[b] || 0) + p.value;
+  });
+  return byBucket;
 }
 
 function renderPeriodTabs() {
@@ -149,13 +160,15 @@ function renderChart() {
   if (chart) chart.destroy();
   const keys = [...selected];
   if (!keys.length) return;
-  const allDates = new Set();
-  keys.forEach(k => filteredSeries(k).forEach(p => allDates.add(p.date)));
-  const dates = [...allDates].sort();
+
+  const allRawDates = new Set();
+  keys.forEach(k => filteredSeries(k).forEach(p => allRawDates.add(p.date)));
+  const rangeStart = period === "all" ? ([...allRawDates].sort()[0] || todayStr()) : daysAgo(period);
+  const dates = continuousBuckets(rangeStart, groupBy);
 
   const datasets = keys.map(k => {
-    const byDate = Object.fromEntries(filteredSeries(k).map(p => [p.date, p.value]));
-    const absValues = dates.map(d => byDate[d] ?? null);
+    const byBucket = bucketedSeries(k);
+    const absValues = dates.map(d => byBucket[d] ?? null);
     let values = absValues;
     if (mode === "norm") {
       const max = Math.max(...absValues.filter(v => v != null), 0) || 1;
@@ -244,6 +257,7 @@ function renderOverviewKPIs() {
 
 function renderAll() {
   renderPeriodTabs();
+  renderGroupTabs($("group-tabs"), groupBy, (g) => { groupBy = g; renderAll(); });
   renderModeButtons();
   $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
   renderOverviewKPIs();

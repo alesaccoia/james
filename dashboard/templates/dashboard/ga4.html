@@ -21,6 +21,11 @@
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
     <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+    <div class="join" id="group-tabs">
+      <button class="btn btn-sm join-item" data-g="day">Giorno</button>
+      <button class="btn btn-sm join-item" data-g="week">Settimana</button>
+      <button class="btn btn-sm join-item" data-g="month">Mese</button>
+    </div>
     <label class="label cursor-pointer gap-2">
       <input type="checkbox" id="chk-events" class="checkbox checkbox-sm">
       <span class="label-text text-sm">Mostra eventi</span>
@@ -147,27 +152,45 @@ const fmtSecs = (v) => {
 let DATA = null;
 let EVENTS = [];
 let period = 30;
+let groupBy = "day";
 let geoMode = "country";
 let channelMetric = "sessions"; // sessions | totalUsers
 let channelView = "share"; // share (100%-stacked) | abs
 let charts = { overview: null, channels: null, donut: null, engagement: null };
 const CHANNEL_METRIC_LABEL = { sessions: "Sessioni", totalUsers: "Utenti totali" };
+const { daysAgo, todayStr, bucketOf, continuousBuckets, renderGroupTabs } = TimeSeries;
 
 function annotationPlugin(labels) {
   if (!$("chk-events").checked) return {};
   return { annotation: { annotations: MarketingEvents.annotations(EVENTS, labels) } };
 }
 
-function daysAgo(n) {
-  const d = new Date();
-  d.setUTCHours(0, 0, 0, 0);
-  d.setUTCDate(d.getUTCDate() - n);
-  return d.toISOString().slice(0, 10);
-}
-
 function inPeriod(date) {
   if (period === "all") return true;
   return date >= daysAgo(period);
+}
+
+// count-type metrics sum per bucket; rate/duration-type metrics (bounce
+// rate, avg session duration) are averaged - summing a percentage across a
+// week produces a meaningless inflated number.
+function bucketRows(rows, keys, agg) {
+  const buckets = {};
+  rows.forEach(r => {
+    const b = bucketOf(r.date, groupBy);
+    buckets[b] = buckets[b] || {};
+    keys.forEach(k => (buckets[b][k] = buckets[b][k] || []).push(r[k]));
+  });
+  const out = {};
+  Object.entries(buckets).forEach(([b, vals]) => {
+    out[b] = {};
+    keys.forEach(k => {
+      const arr = vals[k] || [];
+      out[b][k] = agg === "avg"
+        ? (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0)
+        : arr.reduce((s, v) => s + v, 0);
+    });
+  });
+  return out;
 }
 
 function colorOf(list, name) {
@@ -203,18 +226,24 @@ function renderKPIs() {
     </div>`).join("");
 }
 
+function rangeStartFor(rows) {
+  return period === "all" ? (rows.map(r => r.date).sort()[0] || todayStr()) : daysAgo(period);
+}
+
 function renderOverviewChart() {
   if (charts.overview) charts.overview.destroy();
-  const rows = DATA.overview.filter(r => inPeriod(r.date)).sort((a, b) => a.date < b.date ? -1 : 1);
-  const labels = rows.map(r => r.date);
+  const rows = DATA.overview.filter(r => inPeriod(r.date));
+  const labels = continuousBuckets(rangeStartFor(rows), groupBy);
+  const b = bucketRows(rows, ["sessions", "totalUsers", "newUsers"], "sum");
+  const at = (k) => labels.map(l => (b[l] || {})[k] || 0);
   charts.overview = new Chart($("chart-overview"), {
     type: "line",
     data: {
       labels,
       datasets: [
-        { label: "Sessioni", data: rows.map(r => r.sessions), borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25 },
-        { label: "Utenti totali", data: rows.map(r => r.totalUsers), borderColor: PALETTE[2], backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 2, tension: .25 },
-        { label: "Nuovi utenti", data: rows.map(r => r.newUsers), borderColor: PALETTE[3], backgroundColor: PALETTE[3], borderWidth: 2, pointRadius: 2, tension: .25, borderDash: [4, 3] },
+        { label: "Sessioni", data: at("sessions"), borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25 },
+        { label: "Utenti totali", data: at("totalUsers"), borderColor: PALETTE[2], backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 2, tension: .25 },
+        { label: "Nuovi utenti", data: at("newUsers"), borderColor: PALETTE[3], backgroundColor: PALETTE[3], borderWidth: 2, pointRadius: 2, tension: .25, borderDash: [4, 3] },
       ],
     },
     options: {
@@ -227,15 +256,17 @@ function renderOverviewChart() {
 
 function renderEngagementChart() {
   if (charts.engagement) charts.engagement.destroy();
-  const rows = DATA.overview.filter(r => inPeriod(r.date)).sort((a, b) => a.date < b.date ? -1 : 1);
-  const labels = rows.map(r => r.date);
+  const rows = DATA.overview.filter(r => inPeriod(r.date));
+  const labels = continuousBuckets(rangeStartFor(rows), groupBy);
+  const b = bucketRows(rows, ["bounceRate", "avgSessionDuration"], "avg");
+  const at = (k) => labels.map(l => (b[l] || {})[k] ?? null);
   charts.engagement = new Chart($("chart-engagement"), {
     type: "line",
     data: {
       labels,
       datasets: [
-        { label: "Bounce rate", data: rows.map(r => r.bounceRate), borderColor: PALETTE[5], backgroundColor: PALETTE[5], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y" },
-        { label: "Durata sessione media (s)", data: rows.map(r => r.avgSessionDuration), borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y1" },
+        { label: "Bounce rate", data: at("bounceRate"), borderColor: PALETTE[5], backgroundColor: PALETTE[5], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y" },
+        { label: "Durata sessione media (s)", data: at("avgSessionDuration"), borderColor: PALETTE[0], backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y1" },
       ],
     },
     options: {
@@ -294,12 +325,15 @@ function renderChannelsChart() {
   if (charts.channels) charts.channels.destroy();
   if (charts.donut) charts.donut.destroy();
   const rows = DATA.channels.filter(r => inPeriod(r.date));
-  const dates = [...new Set(rows.map(r => r.date))].sort();
+  const dates = continuousBuckets(rangeStartFor(rows), groupBy);
   const totals = {};
   rows.forEach(r => { totals[r.channel] = (totals[r.channel] || 0) + r[channelMetric]; });
   const channelNames = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
   const cell = {};
-  rows.forEach(r => { cell[r.date + "|" + r.channel] = (cell[r.date + "|" + r.channel] || 0) + r[channelMetric]; });
+  rows.forEach(r => {
+    const b = bucketOf(r.date, groupBy);
+    cell[b + "|" + r.channel] = (cell[b + "|" + r.channel] || 0) + r[channelMetric];
+  });
 
   const isShare = channelView === "share";
   const dayTotal = {};
@@ -408,6 +442,7 @@ function renderSourcesTable() {
 
 function renderAll() {
   renderPeriodTabs();
+  renderGroupTabs($("group-tabs"), groupBy, (g) => { groupBy = g; renderAll(); });
   $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
   renderKPIs();
   renderOverviewChart();
