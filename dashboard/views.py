@@ -159,12 +159,16 @@ def _facebook_posts():
         shares = _num((d.get('shares') or {}).get('count'))
         clicks = m.get('post_clicks', 0)
         reactions = m.get('post_reactions_by_type_total', 0)
+        permalink = d.get('permalink_url')
+        # Facebook's post object has no dedicated Reel/Post field - the
+        # permalink path is the only reliable signal (/reel/... vs /posts/...).
+        post_type = 'Reel' if permalink and '/reel/' in permalink else 'Post'
         posts.append({
             'id': pid,
             'date': date,
             'text': (d.get('message') or d.get('story') or '')[:280],
-            'permalink': d.get('permalink_url'),
-            'type': d.get('status_type') or 'post',
+            'permalink': permalink,
+            'type': post_type,
             'shares': shares,
             'media_view': m.get('post_media_view', 0),
             'clicks': clicks,

@@ -25,6 +25,11 @@
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
     <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+    <div class="join" id="type-tabs">
+      <button class="btn btn-xs join-item" data-t="">Tutti</button>
+      <button class="btn btn-xs join-item" data-t="Post">Post</button>
+      <button class="btn btn-xs join-item" data-t="Reel">Reel</button>
+    </div>
   </div>
 
   <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="kpis"></div>
@@ -81,6 +86,7 @@ const fmtPct = (v) => v == null ? "N/D" : fmtN.format(v) + "%";
 let DATA = null;
 let period = 30;
 let groupBy = "day";
+let typeFilter = "";
 let selectedMetrics = new Set(["page_total_actions", "page_post_engagements"]);
 let normalize = false;
 let chart = null;
@@ -88,6 +94,10 @@ let chart = null;
 function inPeriod(date) {
   if (period === "all") return true;
   return date >= daysAgo(period);
+}
+
+function filteredPosts() {
+  return DATA.posts.filter(p => inPeriod(p.date) && (!typeFilter || p.type === typeFilter));
 }
 
 function renderPeriodTabs() {
@@ -98,10 +108,17 @@ function renderPeriodTabs() {
     b.onclick = () => { period = b.dataset.v === "all" ? "all" : Number(b.dataset.v); renderAll(); });
 }
 
+function renderTypeTabs() {
+  $("type-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.t === typeFilter);
+    b.onclick = () => { typeFilter = b.dataset.t; renderAll(); };
+  });
+}
+
 function renderKPIs() {
   const insights = DATA.page_insights.filter(r => inPeriod(r.date));
   const sum = (metric) => insights.filter(r => r.metric === metric).reduce((s, r) => s + r.value, 0);
-  const posts = DATA.posts.filter(p => inPeriod(p.date));
+  const posts = filteredPosts();
   const totalEngagement = posts.reduce((s, p) => s + p.engagement, 0);
 
   const defs = [
@@ -189,10 +206,11 @@ function renderChart() {
 
 function renderPostsTable() {
   const ft = $("f-text").value.toLowerCase();
-  const posts = DATA.posts.filter(p => inPeriod(p.date) && (!ft || p.text.toLowerCase().includes(ft)));
+  const posts = filteredPosts().filter(p => !ft || p.text.toLowerCase().includes(ft));
   const body = posts.map(p => `
     <tr>
       <td class="whitespace-nowrap">${p.date}</td>
+      <td><span class="badge badge-ghost badge-sm">${p.type}</span></td>
       <td class="max-w-sm truncate" title="${(p.text || "").replace(/"/g, '&quot;')}">${p.text || '<span class="opacity-40">(nessun testo)</span>'}</td>
       <td class="text-right">${fmt(p.reactions)}</td>
       <td class="text-right">${fmt(p.clicks)}</td>
@@ -203,13 +221,14 @@ function renderPostsTable() {
       <td>${p.permalink ? `<a href="${p.permalink}" target="_blank" rel="noopener" class="link link-primary">apri</a>` : "—"}</td>
     </tr>`).join("");
   $("posts-table").innerHTML =
-    `<thead><tr><th>data</th><th>testo</th><th class="text-right">reazioni</th><th class="text-right">click</th><th class="text-right">media view</th><th class="text-right">condivisioni</th><th class="text-right">engagement</th><th class="text-right">tasso su reach</th><th></th></tr></thead>
-     <tbody>${body || '<tr><td colspan="9" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
+    `<thead><tr><th>data</th><th>tipo</th><th>testo</th><th class="text-right">reazioni</th><th class="text-right">click</th><th class="text-right">media view</th><th class="text-right">condivisioni</th><th class="text-right">engagement</th><th class="text-right">tasso su reach</th><th></th></tr></thead>
+     <tbody>${body || '<tr><td colspan="10" class="opacity-50">nessun post nel periodo</td></tr>'}</tbody>`;
   $("src-rows").textContent = posts.length;
 }
 
 function renderAll() {
   renderPeriodTabs();
+  renderTypeTabs();
   renderGroupTabs($("group-tabs"), groupBy, (g) => { groupBy = g; renderAll(); });
   $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
   renderKPIs();
