@@ -40,6 +40,10 @@
       <div class="flex flex-wrap items-center gap-4 mb-1">
         <p class="text-sm opacity-60">Somma per data di pubblicazione, periodo selezionato.</p>
         <div class="grow"></div>
+        <label class="label cursor-pointer gap-2">
+          <input type="checkbox" id="chk-normalize" class="checkbox checkbox-sm">
+          <span class="label-text text-sm">Normalizza</span>
+        </label>
         <div class="join" id="group-tabs">
           <button class="btn btn-xs join-item" data-g="day">Giorno</button>
           <button class="btn btn-xs join-item" data-g="week">Settimana</button>
@@ -83,6 +87,7 @@ let DATA = null;
 let period = 30;
 let groupBy = "day";
 let typeFilter = "";
+let normalize = false;
 let chart = null;
 
 function inPeriod(date) {
@@ -145,32 +150,55 @@ function renderChart() {
     posts.forEach(p => { const b = bucketOf(p.date, groupBy); totals[b] = (totals[b] || 0) + p[key]; });
     return buckets.map(b => totals[b] || 0);
   };
-  const reachSeries = byBucket("reach");
-  const engagementSeries = byBucket("engagement");
-  const rateSeries = buckets.map((b, i) => reachSeries[i] ? (engagementSeries[i] / reachSeries[i] * 100) : null);
+  const reachAbs = byBucket("reach");
+  const engagementAbs = byBucket("engagement");
+  const rateAbs = buckets.map((b, i) => reachAbs[i] ? (engagementAbs[i] / reachAbs[i] * 100) : null);
+
+  // Normalized mode: each series rescaled to its own max = 100, so shapes
+  // are comparable on one axis despite wildly different magnitudes (reach
+  // in the thousands vs a rate in single-digit %). Tooltip always shows
+  // the real absolute value regardless of mode.
+  const toIndex = (abs) => {
+    if (!normalize) return abs;
+    const max = Math.max(...abs.filter(v => v != null), 0) || 1;
+    return abs.map(v => v == null ? null : (v / max) * 100);
+  };
+  const reachSeries = toIndex(reachAbs);
+  const engagementSeries = toIndex(engagementAbs);
+  const rateSeries = toIndex(rateAbs);
+
+  const fmtAbs = (label, abs) => label === "Tasso di engagement"
+    ? (abs == null ? "N/D" : fmtN.format(abs) + "%")
+    : fmtN.format(abs);
 
   chart = new Chart($("chart-trend"), {
     type: "bar",
     data: {
       labels: buckets,
       datasets: [
-        { type: "bar", label: "Reach", data: reachSeries, backgroundColor: PALETTE[0], borderRadius: 2, yAxisID: "y" },
-        { type: "bar", label: "Interazioni totali", data: engagementSeries, backgroundColor: PALETTE[1], borderRadius: 2, yAxisID: "y" },
-        { type: "line", label: "Tasso di engagement", data: rateSeries, borderColor: PALETTE[2], backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: "y1" },
+        { type: "bar", label: "Reach", data: reachSeries, _abs: reachAbs, backgroundColor: PALETTE[0], borderRadius: 2, yAxisID: "y" },
+        { type: "bar", label: "Interazioni totali", data: engagementSeries, _abs: engagementAbs, backgroundColor: PALETTE[1], borderRadius: 2, yAxisID: "y" },
+        { type: "line", label: "Tasso di engagement", data: rateSeries, _abs: rateAbs, borderColor: PALETTE[2], backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: normalize ? "y" : "y1" },
       ],
     },
     options: {
       maintainAspectRatio: false,
-      scales: {
-        x: { grid: { display: false } },
-        y: { position: "left", beginAtZero: true, grid: { color: "#e5e7eb" } },
-        y1: { position: "right", beginAtZero: true, grid: { display: false }, ticks: { callback: v => v + "%" } },
-      },
+      scales: normalize
+        ? { x: { grid: { display: false } }, y: { beginAtZero: true, max: 100, grid: { color: "#e5e7eb" }, ticks: { callback: v => v + "%" } } }
+        : {
+            x: { grid: { display: false } },
+            y: { position: "left", beginAtZero: true, grid: { color: "#e5e7eb" } },
+            y1: { position: "right", beginAtZero: true, grid: { display: false }, ticks: { callback: v => v + "%" } },
+          },
       plugins: {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
-        tooltip: { callbacks: { label: ctx => ctx.dataset.yAxisID === "y1"
-          ? ` ${ctx.dataset.label}: ${ctx.parsed.y == null ? "N/D" : fmtN.format(ctx.parsed.y) + "%"}`
-          : ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}` } },
+        tooltip: { callbacks: { label: ctx => {
+          const abs = ctx.dataset._abs[ctx.dataIndex];
+          const absStr = fmtAbs(ctx.dataset.label, abs);
+          return normalize
+            ? ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}% (${absStr})`
+            : ` ${ctx.dataset.label}: ${absStr}`;
+        } } },
       },
     },
   });
@@ -211,6 +239,7 @@ function renderAll() {
 }
 
 $("f-text").addEventListener("input", renderPostsTable);
+$("chk-normalize").addEventListener("change", (e) => { normalize = e.target.checked; renderChart(); });
 $("btn-reload").onclick = load;
 
 async function load() {

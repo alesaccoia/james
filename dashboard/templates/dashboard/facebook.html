@@ -35,6 +35,10 @@
       <div class="flex flex-wrap items-center gap-4 mb-1">
         <div class="flex flex-wrap gap-3" id="metric-picker"></div>
         <div class="grow"></div>
+        <label class="label cursor-pointer gap-2">
+          <input type="checkbox" id="chk-normalize" class="checkbox checkbox-sm">
+          <span class="label-text text-sm">Normalizza</span>
+        </label>
         <div class="join" id="group-tabs">
           <button class="btn btn-xs join-item" data-g="day">Giorno</button>
           <button class="btn btn-xs join-item" data-g="week">Settimana</button>
@@ -78,6 +82,7 @@ let DATA = null;
 let period = 30;
 let groupBy = "day";
 let selectedMetrics = new Set(["page_total_actions", "page_post_engagements"]);
+let normalize = false;
 let chart = null;
 
 function inPeriod(date) {
@@ -145,9 +150,16 @@ function renderChart() {
       const b = bucketOf(r.date, groupBy);
       byBucket[b] = (byBucket[b] || 0) + r.value;
     });
+    const abs = buckets.map(b => byBucket[b] || 0);
+    let values = abs;
+    if (normalize) {
+      const max = Math.max(...abs, 0) || 1;
+      values = abs.map(v => (v / max) * 100);
+    }
     return {
       label: METRIC_LABELS[m],
-      data: buckets.map(b => byBucket[b] || 0),
+      data: values,
+      _abs: abs,
       backgroundColor: PALETTE[i % PALETTE.length],
       borderRadius: 2,
     };
@@ -158,8 +170,19 @@ function renderChart() {
     data: { labels: buckets, datasets },
     options: {
       maintainAspectRatio: false,
-      scales: { x: { grid: { display: false } }, y: { grid: { color: "#e5e7eb" }, beginAtZero: true } },
-      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } } },
+      scales: {
+        x: { grid: { display: false } },
+        y: normalize
+          ? { beginAtZero: true, max: 100, grid: { color: "#e5e7eb" }, ticks: { callback: v => v + "%" } }
+          : { grid: { color: "#e5e7eb" }, beginAtZero: true },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
+        tooltip: { callbacks: { label: ctx => {
+          const abs = fmtN.format(ctx.dataset._abs[ctx.dataIndex]);
+          return normalize ? ` ${ctx.dataset.label}: ${fmtN.format(ctx.parsed.y)}% (${abs})` : ` ${ctx.dataset.label}: ${abs}`;
+        } } },
+      },
     },
   });
 }
@@ -195,6 +218,7 @@ function renderAll() {
 }
 
 $("f-text").addEventListener("input", renderPostsTable);
+$("chk-normalize").addEventListener("change", (e) => { normalize = e.target.checked; renderChart(); });
 $("btn-reload").onclick = load;
 
 async function load() {
