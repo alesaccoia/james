@@ -178,7 +178,7 @@ function renderChart() {
       datasets: [
         { type: "bar", label: "Reach", data: reachSeries, _abs: reachAbs, backgroundColor: PALETTE[0], borderRadius: 2, yAxisID: "y" },
         { type: "bar", label: "Interazioni totali", data: engagementSeries, _abs: engagementAbs, backgroundColor: PALETTE[1], borderRadius: 2, yAxisID: "y" },
-        { type: "line", label: "Tasso di engagement", data: rateSeries, _abs: rateAbs, borderColor: PALETTE[2], backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 2, tension: .25, yAxisID: normalize ? "y" : "y1" },
+        { type: "bar", label: "Tasso di engagement", data: rateSeries, _abs: rateAbs, backgroundColor: PALETTE[2], borderRadius: 2, yAxisID: normalize ? "y" : "y1" },
       ],
     },
     options: {
