@@ -210,16 +210,35 @@ function renderChart() {
   const buckets = [...new Set(allDaysInRange(rangeStart, todayStr()).map(bucketOf))].sort();
 
   // Per KPI: filter by period, then bucket by day/week/month.
+  //
+  // Ratio KPIs (CPL, CTR, frequenza, video completion...) carry their own
+  // numerator and denominator per day, and are re-derived per bucket as
+  // sum(num)/sum(den). Averaging the daily ratios instead - which is what
+  // this used to do - gives a materially different and wrong number as soon
+  // as daily volumes differ: a day with 1 lead at 50 EUR would weigh the
+  // same as a day with 40 leads at 5 EUR.
   const bucketedByKey = {};
   keys.forEach(k => {
     const def = KPI_DEFS[k];
-    const byBucket = {};
-    (def.series || []).filter(p => inPeriod(p.date)).forEach(p => {
-      const b = bucketOf(p.date);
-      (byBucket[b] = byBucket[b] || []).push(p.value);
-    });
-    bucketedByKey[k] = Object.fromEntries(
-      Object.entries(byBucket).map(([b, vals]) => [b, bucketAggregate(def.unit, vals)]));
+    const points = (def.series || []).filter(p => inPeriod(p.date));
+    if (def.aggregation === "ratio") {
+      const num = {}, den = {};
+      points.forEach(p => {
+        const b = bucketOf(p.date);
+        num[b] = (num[b] || 0) + (p.num || 0);
+        den[b] = (den[b] || 0) + (p.den || 0);
+      });
+      bucketedByKey[k] = Object.fromEntries(
+        Object.keys(num).map(b => [b, den[b] ? num[b] / den[b] * (def.scale || 1) : null]));
+    } else {
+      const byBucket = {};
+      points.forEach(p => {
+        const b = bucketOf(p.date);
+        (byBucket[b] = byBucket[b] || []).push(p.value);
+      });
+      bucketedByKey[k] = Object.fromEntries(
+        Object.entries(byBucket).map(([b, vals]) => [b, bucketAggregate(def.unit, vals)]));
+    }
   });
 
   const datasets = keys.map(k => {
@@ -381,7 +400,9 @@ async function load() {
     EARLIEST_DATE = null;
     STAGES.forEach(stage => stage.kpis.forEach(kpi => {
       KPI_DEFS[keyOf(kpi)] = { label: kpi.name, stage: stage.name, unit: kpi.unit,
-                               target_value: kpi.target_value, series: kpi.series };
+                               target_value: kpi.target_value, series: kpi.series,
+                               aggregation: kpi.aggregation, scale: kpi.scale ?? 1,
+                               source: kpi.source, metric_label: kpi.metric_label };
       (kpi.series || []).forEach(p => {
         if (!EARLIEST_DATE || p.date < EARLIEST_DATE) EARLIEST_DATE = p.date;
       });

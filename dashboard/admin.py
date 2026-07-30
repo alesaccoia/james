@@ -4,7 +4,7 @@ from django.contrib import admin
 from .models import (AirbyteRecord, BudgetLine, BudgetPlan, ChannelCadence,
                      ContentPiece, FunnelKPI, FunnelKPIValue, FunnelStage,
                      FunnelStageSource, ImportLog, MarketingEvent, Tag,
-                     TagDimension)
+                     TagDimension, TaggedEntity)
 
 
 @admin.register(ImportLog)
@@ -112,9 +112,45 @@ class FunnelKPIValueInline(admin.TabularInline):
 
 @admin.register(FunnelKPI)
 class FunnelKPIAdmin(admin.ModelAdmin):
-    list_display = ('stage', 'name', 'unit', 'target_value', 'is_active')
-    list_filter = ('stage', 'unit')
+    list_display = ('stage', 'name', 'unit', 'source', 'formula', 'target_value', 'is_active')
+    list_filter = ('stage', 'unit', 'source', 'aggregation')
     inlines = [FunnelKPIValueInline]
+    fieldsets = (
+        (None, {'fields': ('stage', 'name', 'unit', 'target_value', 'order', 'is_active')}),
+        ('Come si calcola', {
+            'fields': ('source', 'metric', 'metric_denominator', 'aggregation', 'scale', 'entity_level'),
+            'description': 'Lascia fonte="Manuale" per inserire i valori a mano qui sotto. '
+                           'Altrimenti il KPI viene calcolato dai dati sincronizzati, limitato alle '
+                           'entità assegnate a questa fase. Per costi e tassi usa aggregazione '
+                           '"rapporto": vengono ricalcolati come somma(numeratore) ÷ somma(denominatore) '
+                           'su ogni periodo, così restano corretti anche a settimana e mese.',
+        }),
+    )
+
+    @admin.display(description='Formula')
+    def formula(self, obj):
+        if not obj.is_computed:
+            return '— manuale —'
+        f = obj.metric
+        if obj.aggregation == 'ratio' and obj.metric_denominator:
+            f = f'{obj.metric} ÷ {obj.metric_denominator}'
+        elif obj.aggregation == 'avg':
+            f = f'media({obj.metric})'
+        else:
+            f = f'somma({obj.metric})'
+        return f + (f' ×{obj.scale:g}' if obj.scale != 1 else '')
+
+
+@admin.register(TaggedEntity)
+class TaggedEntityAdmin(admin.ModelAdmin):
+    list_display = ('kind', 'external_id', 'stage', 'tag_list', 'updated_at')
+    list_filter = ('kind', 'stage', 'tags__dimension', 'tags')
+    search_fields = ('external_id', 'notes')
+    filter_horizontal = ('tags',)
+
+    @admin.display(description='Tag')
+    def tag_list(self, obj):
+        return ', '.join(t.name for t in obj.tags.all()) or '—'
 
 
 @admin.register(FunnelKPIValue)

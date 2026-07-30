@@ -34,6 +34,10 @@ urlpatterns = [
     path('pianificazione/data.json', views.data_pianificazione, name='data_pianificazione'),
     path('pianificazione/tag/nuovo/', views.tag_save, name='tag_save'),
 
+    path('tagging/', views.tagging, name='tagging'),
+    path('tagging/data.json', views.data_tagging, name='data_tagging'),
+    path('tagging/salva/', views.tagging_save, name='tagging_save'),
+
     path('calendario/', views.calendario, name='calendario'),
     path('calendario/data.json', views.data_calendario, name='data_calendario'),
     path('calendario/salva/', views.content_piece_save, name='content_piece_save'),

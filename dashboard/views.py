@@ -6,11 +6,12 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.text import slugify
 
 from .models import (AirbyteRecord, BudgetPlan, ChannelCadence, ContentPiece,
-                     FunnelStage, FunnelStageSource, MarketingEvent, Tag,
-                     TagDimension)
+                     FunnelKPI, FunnelStage, FunnelStageSource, MarketingEvent,
+                     Tag, TagDimension, TaggedEntity)
 
 # One entry per Airbyte stream we know how to turn into marketing KPIs.
 # Add a new entry here whenever a new source (Google Ads, TikTok Ads,
@@ -657,12 +658,241 @@ def _cpl_series_from_rows(campaign_rows):
     return [{'date': d, 'value': spend[d] / leads[d]} for d in sorted(spend) if leads[d]]
 
 
-# Funnel KPIs computed from real Airbyte data instead of manual entry, keyed
-# by KPI name (matched within whatever stage it's defined on). Add an entry
-# here whenever another KPI gets a real data source wired up. Not every KPI
-# can be computed this way yet - e.g. "Tasso di contatto" and "Booking rate"
-# would need per-lead campaign attribution on the wundt side, which isn't
-# captured today (lead.extra is empty), so those stay manual.
+# ------------------------------------------------- metriche e tagging Meta
+# The measurement engine behind the funnel: which raw metric each KPI reads,
+# from which kind of entity, and how it rolls up. Paid and organic are kept
+# strictly separate — "impression" from a boosted campaign and "impression"
+# from an organic post are different things and must never be silently added
+# together, so they're different metric keys entirely.
+
+
+def _fb_action_list_total(data, field):
+    """Several Meta insight fields (video_p100_watched_actions, ...) come back
+    shaped like `actions`: a list of {action_type, value}. Summed into one."""
+    return sum(_num(a.get('value')) for a in (data.get(field) or []))
+
+
+# key -> (label, source, extractor). `source` decides which row collection the
+# extractor is fed: 'paid' rows are fb_ads_insights records, 'organic' rows are
+# the normalised post dicts from _facebook_posts()/_instagram_posts().
+METRIC_REGISTRY = {
+    # --- Meta paid (fb_ads_insights) ---
+    'impressions': ('Impression (paid)', 'paid', lambda d: _num(d.get('impressions'))),
+    'reach': ('Reach (paid)', 'paid', lambda d: _num(d.get('reach'))),
+    'spend': ('Spesa', 'paid', lambda d: _num(d.get('spend'))),
+    'clicks': ('Click', 'paid', lambda d: _num(d.get('clicks'))),
+    'inline_link_clicks': ('Click sul link', 'paid', lambda d: _num(d.get('inline_link_clicks'))),
+    'leads': ('Lead (Instant Form)', 'paid', lambda d: _fb_action_value(d, 'lead')),
+    'video_p100': ('Video visti al 100%', 'paid',
+                   lambda d: _fb_action_list_total(d, 'video_p100_watched_actions')),
+    'video_p25': ('Video visti al 25%', 'paid',
+                  lambda d: _fb_action_list_total(d, 'video_p25_watched_actions')),
+    'video_plays': ('Riproduzioni video', 'paid',
+                    lambda d: _fb_action_list_total(d, 'video_play_actions')),
+    'estimated_ad_recallers': ('Ricordo stimato', 'paid',
+                               lambda d: _num(d.get('estimated_ad_recallers'))),
+
+    # --- organico (post Facebook + Instagram) ---
+    # Facebook Pages no longer exposes reach at all (see the Facebook page for
+    # the full story), so organic_reach only ever counts Instagram posts —
+    # it is NOT comparable with paid reach and is labelled accordingly.
+    'organic_posts': ('Post pubblicati', 'organic', lambda p: 1),
+    'organic_reach': ('Reach organica (solo IG)', 'organic', lambda p: _num(p.get('reach'))),
+    'organic_engagement': ('Interazioni organiche', 'organic', lambda p: _num(p.get('engagement'))),
+    'organic_likes': ('Mi piace organici', 'organic', lambda p: _num(p.get('likes'))),
+    'organic_comments': ('Commenti organici', 'organic', lambda p: _num(p.get('comments'))),
+    'organic_shares': ('Condivisioni organiche', 'organic', lambda p: _num(p.get('shares'))),
+    'organic_media_view': ('Visualizzazioni media (FB)', 'organic', lambda p: _num(p.get('media_view'))),
+
+    # --- CRM wundt ---
+    'clients_acquired': ('Clienti acquisiti', 'wundt', None),
+}
+
+
+def _meta_hierarchy(insight_rows):
+    """{ad_id: adset_id} and {adset_id: campaign_id} plus display names, read
+    off the insight rows themselves so it always reflects what actually ran
+    (an entity with no delivery simply isn't there)."""
+    ad_parent, adset_parent = {}, {}
+    names = {'campaign': {}, 'ad_set': {}, 'ad': {}}
+    for d in insight_rows:
+        cid, asid, aid = (str(d.get('campaign_id') or ''), str(d.get('adset_id') or ''),
+                          str(d.get('ad_id') or ''))
+        if cid:
+            names['campaign'].setdefault(cid, d.get('campaign_name') or cid)
+        if asid:
+            names['ad_set'].setdefault(asid, d.get('adset_name') or asid)
+            if cid:
+                adset_parent[asid] = cid
+        if aid:
+            names['ad'].setdefault(aid, d.get('ad_name') or aid)
+            if asid:
+                ad_parent[aid] = asid
+    return ad_parent, adset_parent, names
+
+
+def _resolve_tags(kind, external_id, taggings, ad_parent, adset_parent):
+    """Effective tags for one Meta object, walking up the hierarchy.
+
+    Per dimension: the nearest level that says anything about a dimension
+    wins outright for that dimension; dimensions nobody mentions stay empty.
+    Returns (tags_by_dimension, inherited_from) so the UI can show what was
+    inherited rather than set directly.
+    """
+    chain = [(kind, external_id)]
+    if kind == 'ad':
+        asid = ad_parent.get(external_id)
+        if asid:
+            chain.append(('ad_set', asid))
+            cid = adset_parent.get(asid)
+            if cid:
+                chain.append(('campaign', cid))
+    elif kind == 'ad_set':
+        cid = adset_parent.get(external_id)
+        if cid:
+            chain.append(('campaign', cid))
+
+    by_dim, inherited_from = {}, {}
+    for level, (ck, cid) in enumerate(chain):
+        tagging = taggings.get((ck, cid))
+        if not tagging:
+            continue
+        for tag in tagging['tags']:
+            dim = tag['dimension_slug']
+            if dim in by_dim:      # a nearer level already decided this dimension
+                continue
+            by_dim.setdefault(dim, []).append(tag)
+        for dim in {t['dimension_slug'] for t in tagging['tags']}:
+            inherited_from.setdefault(dim, None if level == 0 else ck)
+    return by_dim, inherited_from
+
+
+def _resolve_stage(kind, external_id, taggings, ad_parent, adset_parent):
+    """Effective funnel stage, inherited the same way as tags."""
+    chain = [(kind, external_id)]
+    if kind == 'ad':
+        asid = ad_parent.get(external_id)
+        if asid:
+            chain.append(('ad_set', asid))
+            cid = adset_parent.get(asid)
+            if cid:
+                chain.append(('campaign', cid))
+    elif kind == 'ad_set':
+        cid = adset_parent.get(external_id)
+        if cid:
+            chain.append(('campaign', cid))
+    for level, (ck, cid) in enumerate(chain):
+        tagging = taggings.get((ck, cid))
+        if tagging and tagging['stage_id']:
+            return tagging['stage_id'], (None if level == 0 else ck)
+    return None, None
+
+
+def _load_taggings():
+    """{(kind, external_id): {stage_id, tags[]}} for every tagged Meta object."""
+    out = {}
+    for te in TaggedEntity.objects.prefetch_related('tags__dimension'):
+        out[(te.kind, te.external_id)] = {
+            'stage_id': te.stage_id,
+            'notes': te.notes,
+            'tags': [{'id': t.pk, 'name': t.name, 'color': t.color or None,
+                      'dimension': t.dimension.name, 'dimension_slug': t.dimension.slug}
+                     for t in te.tags.all()],
+        }
+    return out
+
+
+def _paid_rows_for_stage(stage_id, insight_rows, taggings, ad_parent, adset_parent, level=None):
+    """fb_ads_insights rows whose ad resolves to this funnel stage.
+
+    Matching happens at ad level and walks up, so tagging a campaign is enough
+    to capture everything under it, while an ad set or a single ad can still be
+    pulled into a different stage on its own.
+    """
+    rows = []
+    for d in insight_rows:
+        aid = str(d.get('ad_id') or '')
+        asid = str(d.get('adset_id') or '')
+        cid = str(d.get('campaign_id') or '')
+        if level == 'campaign':
+            resolved, _ = _resolve_stage('campaign', cid, taggings, ad_parent, adset_parent)
+        elif level == 'ad_set':
+            resolved, _ = _resolve_stage('ad_set', asid, taggings, ad_parent, adset_parent)
+        elif level == 'ad':
+            resolved, _ = _resolve_stage('ad', aid, taggings, ad_parent, adset_parent)
+        else:
+            resolved, _ = _resolve_stage('ad', aid, taggings, ad_parent, adset_parent)
+            if resolved is None and asid:
+                resolved, _ = _resolve_stage('ad_set', asid, taggings, ad_parent, adset_parent)
+            if resolved is None and cid:
+                resolved, _ = _resolve_stage('campaign', cid, taggings, ad_parent, adset_parent)
+        if resolved == stage_id:
+            rows.append(d)
+    return rows
+
+
+def _organic_posts_for_stage(stage_id, organic_posts, pieces_by_key):
+    """Organic posts assigned to this stage through their ContentPiece — the
+    same record the editorial calendar edits, so tagging in either place is
+    tagging the same thing."""
+    out = []
+    for p in organic_posts:
+        key = (p.get('permalink') or '').rstrip('/')
+        piece = pieces_by_key.get(key)
+        if piece and piece['stage_id'] == stage_id:
+            out.append(p)
+    return out
+
+
+def _kpi_series(kpi, paid_rows, organic_rows, date_key_paid='date_start'):
+    """Daily series for one computed KPI.
+
+    For ratio KPIs the numerator and denominator are carried alongside the
+    value, so the frontend can re-derive the ratio per week/month bucket
+    instead of averaging daily ratios (which would be wrong).
+    """
+    entry = METRIC_REGISTRY.get(kpi.metric)
+    if kpi.source == 'wundt':
+        if kpi.metric == 'clients_acquired':
+            return [{**p, 'num': p['value'], 'den': None} for p in _client_acquired_series()]
+        return []
+    if not entry:
+        return []
+    _, _, extractor = entry
+
+    if kpi.source == 'organic':
+        rows, date_of = organic_rows, (lambda r: r.get('date'))
+    else:
+        rows, date_of = paid_rows, (lambda r: str(r.get(date_key_paid) or '')[:10])
+
+    den_entry = METRIC_REGISTRY.get(kpi.metric_denominator) if kpi.metric_denominator else None
+    num_by_date, den_by_date, count_by_date = defaultdict(float), defaultdict(float), defaultdict(int)
+    for r in rows:
+        date = date_of(r)
+        if not date:
+            continue
+        num_by_date[date] += extractor(r)
+        count_by_date[date] += 1
+        if den_entry:
+            den_by_date[date] += den_entry[2](r)
+
+    series = []
+    for date in sorted(num_by_date):
+        num = num_by_date[date]
+        if kpi.aggregation == 'ratio':
+            den = den_by_date.get(date, 0)
+            value = (num / den * kpi.scale) if den else None
+            series.append({'date': date, 'value': value, 'num': num, 'den': den})
+        elif kpi.aggregation == 'avg':
+            n = count_by_date[date] or 1
+            series.append({'date': date, 'value': num / n * kpi.scale, 'num': num, 'den': n})
+        else:
+            series.append({'date': date, 'value': num * kpi.scale, 'num': num, 'den': None})
+    return series
+
+
+# Legacy name-matched computed KPIs, kept so KPIs created before the
+# source/metric fields existed keep working until they're reconfigured.
 FUNNEL_COMPUTED_KPIS = {
     'Clienti nuovi paganti': lambda campaign_rows: _client_acquired_series(),
     'Lead validi': _leads_series_from_rows,
@@ -682,15 +912,33 @@ def funnel(request):
 @login_required
 def data_funnel(request):
     insight_rows = list(_stream_rows('fb_ads_insights'))
+    ad_parent, adset_parent, _names = _meta_hierarchy(insight_rows)
+    taggings = _load_taggings()
+
+    organic_posts = [{**p, 'platform': 'Facebook'} for p in _facebook_posts()] + \
+                    [{**p, 'platform': 'Instagram'} for p in _instagram_posts()]
+    pieces_by_key = {}
+    for piece in ContentPiece.objects.all():
+        key = (piece.external_permalink or '').rstrip('/')
+        if key:
+            pieces_by_key[key] = {'stage_id': piece.stage_id}
+
     stages = []
     for stage in FunnelStage.objects.filter(is_active=True).prefetch_related('kpis__values', 'sources'):
         campaign_rows = _stage_campaign_rows(stage, insight_rows)
         drilldown = _stage_drilldown(stage, insight_rows)
+        stage_organic = _organic_posts_for_stage(stage.pk, organic_posts, pieces_by_key)
         kpis = []
         for kpi in stage.kpis.filter(is_active=True):
-            computed_fn = FUNNEL_COMPUTED_KPIS.get(kpi.name)
-            if computed_fn:
-                series, computed = computed_fn(campaign_rows), True
+            if kpi.is_computed:
+                paid_rows = _paid_rows_for_stage(stage.pk, insight_rows, taggings,
+                                                 ad_parent, adset_parent,
+                                                 level=kpi.entity_level or None)
+                series = _kpi_series(kpi, paid_rows, stage_organic)
+                computed = True
+            elif FUNNEL_COMPUTED_KPIS.get(kpi.name):
+                series = FUNNEL_COMPUTED_KPIS[kpi.name](campaign_rows)
+                computed = True
             else:
                 series = [{'date': v.date.isoformat(), 'value': v.value, 'note': v.note}
                          for v in sorted(kpi.values.all(), key=lambda v: v.date)]
@@ -701,6 +949,11 @@ def data_funnel(request):
                 'unit': kpi.unit,
                 'target_value': kpi.target_value,
                 'computed': computed,
+                'aggregation': kpi.aggregation if kpi.is_computed else ('sum' if kpi.unit == 'count' else 'avg'),
+                'scale': kpi.scale,
+                'source': kpi.source,
+                'metric': kpi.metric,
+                'metric_label': (METRIC_REGISTRY.get(kpi.metric) or ('', '', None))[0],
                 'series': series,
             })
         stages.append({
@@ -1049,6 +1302,176 @@ def tag_save(request):
         order=(dimension.tags.count() or 0) + 1)
     messages.success(request, f'Tag "{name}" aggiunto a {dimension.name}.')
     return redirect('dashboard:pianificazione')
+
+
+# ------------------------------------------------------------ tagging Meta
+
+
+def _is_boosted(name):
+    """Meta models a boosted post as a campaign literally named `Post: "..."`,
+    so that prefix is the only signal distinguishing it from a campaign built
+    in Ads Manager."""
+    return (name or '').startswith('Post:')
+
+
+@login_required
+def tagging(request):
+    cfg = {'data_url': reverse('dashboard:data_tagging'),
+           'save_url': reverse('dashboard:tagging_save')}
+    return render(request, 'dashboard/tagging.html', {
+        'cfg_json': json.dumps(cfg),
+        'has_data': AirbyteRecord.objects.filter(stream='fb_ads_insights').exists(),
+    })
+
+
+@login_required
+def data_tagging(request):
+    insight_rows = list(_stream_rows('fb_ads_insights'))
+    ad_parent, adset_parent, names = _meta_hierarchy(insight_rows)
+    taggings = _load_taggings()
+
+    # Aggregate real delivery per entity, so every card carries the numbers
+    # that justify where it belongs in the funnel.
+    def _blank():
+        return {'impressions': 0.0, 'reach': 0.0, 'spend': 0.0, 'clicks': 0.0, 'leads': 0.0}
+
+    totals = {'campaign': defaultdict(_blank), 'ad_set': defaultdict(_blank), 'ad': defaultdict(_blank)}
+    for d in insight_rows:
+        vals = {'impressions': _num(d.get('impressions')), 'reach': _num(d.get('reach')),
+                'spend': _num(d.get('spend')), 'clicks': _num(d.get('clicks')),
+                'leads': _fb_action_value(d, 'lead')}
+        for kind, field in (('campaign', 'campaign_id'), ('ad_set', 'adset_id'), ('ad', 'ad_id')):
+            eid = str(d.get(field) or '')
+            if not eid:
+                continue
+            for k, v in vals.items():
+                totals[kind][eid][k] += v
+
+    def _entity(kind, eid):
+        own = taggings.get((kind, eid))
+        by_dim, inherited = _resolve_tags(kind, eid, taggings, ad_parent, adset_parent)
+        stage_id, stage_inherited = _resolve_stage(kind, eid, taggings, ad_parent, adset_parent)
+        return {
+            'kind': kind,
+            'id': eid,
+            'name': names[kind].get(eid, eid),
+            'own_stage_id': own['stage_id'] if own else None,
+            'stage_id': stage_id,
+            'stage_inherited_from': stage_inherited,
+            'own_tag_ids': [t['id'] for t in own['tags']] if own else [],
+            'effective_tags': [t for tags in by_dim.values() for t in tags],
+            'inherited_dimensions': {k: v for k, v in inherited.items() if v},
+            'metrics': dict(totals[kind].get(eid, _blank())),
+        }
+
+    campaigns, boosted = [], []
+    for cid in names['campaign']:
+        e = _entity('campaign', cid)
+        e['children'] = []
+        for asid, parent_cid in adset_parent.items():
+            if parent_cid != cid:
+                continue
+            a = _entity('ad_set', asid)
+            a['children'] = [_entity('ad', aid) for aid, p in ad_parent.items() if p == asid]
+            a['children'].sort(key=lambda x: -x['metrics']['impressions'])
+            e['children'].append(a)
+        e['children'].sort(key=lambda x: -x['metrics']['impressions'])
+        (boosted if _is_boosted(e['name']) else campaigns).append(e)
+
+    campaigns.sort(key=lambda x: -x['metrics']['spend'])
+    boosted.sort(key=lambda x: -x['metrics']['impressions'])
+
+    # Organic posts, tagged through their ContentPiece so the editorial
+    # calendar and this page edit the very same record.
+    pieces = {}
+    for piece in ContentPiece.objects.prefetch_related('tags__dimension'):
+        key = (piece.external_permalink or '').rstrip('/')
+        if key:
+            pieces[key] = piece
+    organic = []
+    for p in ([{**x, 'platform': 'Facebook'} for x in _facebook_posts()] +
+              [{**x, 'platform': 'Instagram'} for x in _instagram_posts()]):
+        key = (p.get('permalink') or '').rstrip('/')
+        piece = pieces.get(key)
+        organic.append({
+            'kind': 'organic_post',
+            'id': key,
+            'piece_id': piece.pk if piece else None,
+            'name': (p.get('text') or '(senza testo)')[:120],
+            'platform': p['platform'],
+            'date': p.get('date'),
+            'permalink': p.get('permalink'),
+            'stage_id': piece.stage_id if piece else None,
+            'own_stage_id': piece.stage_id if piece else None,
+            'own_tag_ids': [t.pk for t in piece.tags.all()] if piece else [],
+            'effective_tags': ([{'id': t.pk, 'name': t.name, 'color': t.color or None,
+                                 'dimension': t.dimension.name, 'dimension_slug': t.dimension.slug}
+                                for t in piece.tags.all()] if piece else []),
+            'inherited_dimensions': {},
+            'metrics': {'impressions': 0.0, 'reach': _num(p.get('reach')), 'spend': 0.0,
+                        'clicks': 0.0, 'leads': 0.0,
+                        'engagement': _num(p.get('engagement'))},
+        })
+    organic.sort(key=lambda x: x['date'] or '', reverse=True)
+
+    return JsonResponse({
+        'campaigns': campaigns,
+        'boosted': boosted,
+        'organic': organic,
+        'stages': [{'id': s.pk, 'name': s.name, 'slug': s.slug, 'order': s.order}
+                   for s in FunnelStage.objects.filter(is_active=True)],
+        'dimensions': _tag_payload(list(TagDimension.objects.filter(is_active=True)
+                                        .prefetch_related('tags'))),
+    })
+
+
+@login_required
+def tagging_save(request):
+    """Persist one entity's stage and/or tags. Paid objects write to
+    TaggedEntity; organic posts write to their ContentPiece, creating one on
+    the fly for a post that was published but never planned in the calendar —
+    which is what keeps the two pages editing a single shared record."""
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'error': 'POST required'}, status=405)
+
+    payload = json.loads(request.body or '{}')
+    kind = payload.get('kind')
+    eid = (payload.get('id') or '').strip()
+    if not kind or not eid:
+        return JsonResponse({'ok': False, 'error': 'kind e id obbligatori'}, status=400)
+
+    stage_id = payload.get('stage_id') or None
+    tag_ids = payload.get('tag_ids')
+
+    if kind == 'organic_post':
+        piece = ContentPiece.objects.filter(external_permalink__startswith=eid).first()
+        if not piece:
+            piece = ContentPiece.objects.create(
+                title=(payload.get('name') or 'Post pubblicato')[:250],
+                channel=(payload.get('platform') or 'instagram').lower(),
+                content_format='post',
+                status='pubblicato',
+                planned_date=payload.get('date') or timezone.now().date(),
+                published_date=payload.get('date') or None,
+                external_permalink=eid,
+                notes='Creato dalla pagina Tagging per agganciare un post pubblicato.')
+        if 'stage_id' in payload:
+            piece.stage_id = stage_id
+            piece.save(update_fields=['stage_id'])
+        if tag_ids is not None:
+            piece.tags.set(Tag.objects.filter(pk__in=tag_ids))
+        return JsonResponse({'ok': True, 'piece_id': piece.pk})
+
+    if kind not in {'campaign', 'ad_set', 'ad'}:
+        return JsonResponse({'ok': False, 'error': f'kind non valido: {kind}'}, status=400)
+
+    entity, _ = TaggedEntity.objects.get_or_create(kind=kind, external_id=eid)
+    if 'stage_id' in payload:
+        entity.stage_id = stage_id
+        entity.save(update_fields=['stage_id', 'updated_at'])
+    if tag_ids is not None:
+        entity.tags.set(Tag.objects.filter(pk__in=tag_ids))
+    return JsonResponse({'ok': True})
 
 
 @login_required

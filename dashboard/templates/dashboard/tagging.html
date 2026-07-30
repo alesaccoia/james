@@ -1,0 +1,426 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Tagging{% endblock %}
+{% block nav_group_strategia %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Tagging e fasi del funnel</h1>
+    <p class="text-sm opacity-60">Assegna campagne, post sponsorizzati e post organici alle fasi, e tagga su tutte le dimensioni</p>
+  </div>
+  <div class="grow"></div>
+  <div class="join" id="view-tabs">
+    <button class="btn btn-sm join-item" data-v="board">Board fasi</button>
+    <button class="btn btn-sm join-item" data-v="tree">Albero e tag</button>
+  </div>
+  <button class="btn btn-sm" id="btn-reload">Ricarica</button>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Nessun dato Meta ancora sincronizzato. Serve una sync Airbyte completata e poi <code>manage.py import_airbyte</code>.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <!-- ---------------------------------------------------------- BOARD -->
+  <div id="view-board">
+    <div class="alert alert-info mb-4 text-sm">
+      <span>Trascina una scheda su una fase per assegnarla. Gli <strong>ad set</strong> e gli <strong>ad</strong> ereditano la fase della campagna: assegnane uno solo se deve stare in una fase diversa. I numeri sulle schede sono la resa reale nel periodo sincronizzato.</span>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-3 mb-4">
+      <div class="join" id="kind-tabs">
+        <button class="btn btn-xs join-item" data-k="campaign">Campagne</button>
+        <button class="btn btn-xs join-item" data-k="boosted">Post sponsorizzati</button>
+        <button class="btn btn-xs join-item" data-k="organic">Post organici</button>
+      </div>
+      <input type="text" id="f-board" placeholder="cerca…" class="input input-bordered input-sm w-56">
+      <span class="text-xs opacity-50" id="board-hint"></span>
+    </div>
+
+    <div class="grid gap-4" id="board" style="grid-template-columns:repeat(auto-fit,minmax(230px,1fr))"></div>
+  </div>
+
+  <!-- ----------------------------------------------------------- TREE -->
+  <div id="view-tree" class="hidden">
+    <div class="alert alert-info mb-4 text-sm">
+      <span>I tag scendono per gerarchia <strong>campagna → ad set → ad</strong>, una dimensione alla volta: se un ad set assegna un tag della dimensione "Audience", quello vince su quello della campagna, mentre le dimensioni che non tocca restano ereditate. I tag ereditati sono mostrati in grigio.</span>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-3 mb-4">
+      <input type="text" id="f-tree" placeholder="cerca campagna, ad set o ad…" class="input input-bordered input-sm w-72">
+      <div class="join" id="tree-kind-tabs">
+        <button class="btn btn-xs join-item" data-k="campaign">Campagne</button>
+        <button class="btn btn-xs join-item" data-k="boosted">Post sponsorizzati</button>
+        <button class="btn btn-xs join-item" data-k="organic">Post organici</button>
+      </div>
+      <button class="btn btn-xs" id="btn-expand">Espandi tutto</button>
+      <button class="btn btn-xs" id="btn-collapse">Chiudi tutto</button>
+    </div>
+
+    <div class="card bg-base-100 shadow">
+      <div class="card-body p-0">
+        <div class="overflow-x-auto">
+          <table class="table table-sm" id="tree-table"></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Modal: tag one entity -->
+<dialog id="tag-modal" class="modal">
+  <div class="modal-box max-w-2xl">
+    <h3 class="font-bold text-lg" id="tag-modal-title">Tag</h3>
+    <p class="text-xs opacity-60 mb-3" id="tag-modal-sub"></p>
+
+    <label class="form-control mb-3">
+      <span class="label-text text-xs">Fase del funnel</span>
+      <select id="t-stage" class="select select-bordered select-sm"></select>
+    </label>
+
+    <div id="t-dimensions" class="flex flex-col gap-3 max-h-80 overflow-y-auto"></div>
+
+    <div class="flex justify-end gap-2 mt-4">
+      <button type="button" class="btn btn-sm" onclick="document.getElementById('tag-modal').close()">Annulla</button>
+      <button type="button" class="btn btn-sm btn-primary" id="t-save">Salva</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>chiudi</button></form>
+</dialog>
+
+<script>const TAG_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = TAG_CFG.data_url;
+const SAVE_URL = TAG_CFG.save_url;
+const KIND_LABEL = { campaign: "Campagna", ad_set: "Ad set", ad: "Ad", organic_post: "Post organico" };
+const PLATFORM_COLOR = { Facebook: "#5b9dff", Instagram: "#f472b6" };
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 0 });
+const fmtEUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+const eur = (v) => v == null ? "—" : fmtEUR.format(v);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+let DATA = null;
+let view = "board";
+let boardKind = "campaign";
+let treeKind = "campaign";
+let expanded = new Set();
+let editing = null;
+
+function csrf() {
+  const m = document.cookie.match(/csrftoken=([^;]+)/);
+  return m ? m[1] : "";
+}
+
+async function save(entity, patch) {
+  const body = { kind: entity.kind, id: entity.id, ...patch };
+  if (entity.kind === "organic_post") {
+    body.name = entity.name; body.platform = entity.platform; body.date = entity.date;
+  }
+  const r = await fetch(SAVE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRFToken": csrf() },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) { alert("Salvataggio fallito"); return false; }
+  return true;
+}
+
+// --------------------------------------------------------------- helpers
+
+function itemsOf(kind) {
+  if (kind === "campaign") return DATA.campaigns;
+  if (kind === "boosted") return DATA.boosted;
+  return DATA.organic;
+}
+
+function tagBadges(tags, inheritedDims, limit) {
+  const list = limit ? tags.slice(0, limit) : tags;
+  const extra = limit && tags.length > limit ? tags.length - limit : 0;
+  const html = list.map(t => {
+    const inh = inheritedDims && inheritedDims[t.dimension_slug];
+    const style = inh
+      ? `background:transparent;color:${t.color || "#94a3b8"};border:1px dashed ${t.color || "#94a3b8"}`
+      : `background:${t.color || "#94a3b8"};color:#fff;border:none`;
+    const title = inh ? `${t.dimension}: ${t.name} — ereditato da ${KIND_LABEL[inh] || inh}` : `${t.dimension}: ${t.name}`;
+    return `<span class="badge badge-xs" style="${style}" title="${esc(title)}">${esc(t.name)}</span>`;
+  }).join(" ");
+  return html + (extra ? ` <span class="badge badge-xs badge-ghost">+${extra}</span>` : "");
+}
+
+// ----------------------------------------------------------------- BOARD
+
+function renderBoard() {
+  const ft = $("f-board").value.toLowerCase();
+  const items = itemsOf(boardKind).filter(i => !ft || i.name.toLowerCase().includes(ft));
+  const cols = [{ id: null, name: "Non assegnate" }, ...DATA.stages];
+
+  $("board-hint").textContent = boardKind === "organic"
+    ? "I post organici contribuiscono a metriche separate (reach/interazioni organiche), mai sommate a quelle paid."
+    : "Solo le assegnazioni diverse dall'ereditarietà vanno impostate a livello di ad set o ad.";
+
+  $("board").innerHTML = cols.map(col => {
+    const inCol = items.filter(i => (i.own_stage_id ?? null) === col.id);
+    return `
+      <div class="card bg-base-100 shadow board-col" data-stage="${col.id ?? ''}">
+        <div class="card-body p-3">
+          <h3 class="font-semibold text-sm flex items-center justify-between">
+            ${esc(col.name)}
+            <span class="badge badge-sm badge-ghost">${inCol.length}</span>
+          </h3>
+          <div class="flex flex-col gap-2 min-h-24 drop-zone" data-stage="${col.id ?? ''}">
+            ${inCol.map(i => cardHtml(i)).join("") || '<div class="text-xs opacity-30 py-4 text-center">trascina qui</div>'}
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+
+  wireDnd();
+}
+
+function cardHtml(i) {
+  const m = i.metrics || {};
+  const stats = i.kind === "organic_post"
+    ? `${fmt(m.reach)} reach · ${fmt(m.engagement)} int.`
+    : `${fmt(m.impressions)} impr · ${eur(m.spend)}${m.leads ? " · " + fmt(m.leads) + " lead" : ""}`;
+  const plat = i.platform
+    ? `<span class="badge badge-xs" style="background:${PLATFORM_COLOR[i.platform]};color:#fff;border:none">${i.platform}</span> `
+    : "";
+  return `
+    <div class="border border-base-300 rounded-lg p-2 bg-base-100 cursor-grab hover:border-primary card-item"
+         draggable="true" data-kind="${i.kind}" data-id="${esc(i.id)}">
+      <div class="text-xs font-medium leading-snug line-clamp-2" title="${esc(i.name)}">${plat}${esc(i.name)}</div>
+      <div class="text-[10px] opacity-50 mt-1">${stats}</div>
+      <div class="mt-1 flex flex-wrap gap-1">${tagBadges(i.effective_tags || [], i.inherited_dimensions, 3)}</div>
+    </div>`;
+}
+
+function wireDnd() {
+  document.querySelectorAll(".card-item").forEach(el => {
+    el.ondragstart = (e) => {
+      e.dataTransfer.setData("text/plain", JSON.stringify({ kind: el.dataset.kind, id: el.dataset.id }));
+      el.classList.add("opacity-40");
+    };
+    el.ondragend = () => el.classList.remove("opacity-40");
+    el.onclick = () => openTagModal(el.dataset.kind, el.dataset.id);
+  });
+  document.querySelectorAll(".drop-zone").forEach(zone => {
+    zone.ondragover = (e) => { e.preventDefault(); zone.classList.add("bg-base-200", "rounded"); };
+    zone.ondragleave = () => zone.classList.remove("bg-base-200", "rounded");
+    zone.ondrop = async (e) => {
+      e.preventDefault();
+      zone.classList.remove("bg-base-200", "rounded");
+      const { kind, id } = JSON.parse(e.dataTransfer.getData("text/plain"));
+      const item = findItem(kind, id);
+      if (!item) return;
+      const stageId = zone.dataset.stage ? Number(zone.dataset.stage) : null;
+      if (!(await save(item, { stage_id: stageId }))) return;
+      await load();
+    };
+  });
+}
+
+function findItem(kind, id) {
+  const pools = [DATA.campaigns, DATA.boosted, DATA.organic];
+  for (const pool of pools) {
+    for (const i of pool) {
+      if (i.kind === kind && String(i.id) === String(id)) return i;
+      for (const c of (i.children || [])) {
+        if (c.kind === kind && String(c.id) === String(id)) return c;
+        for (const g of (c.children || [])) {
+          if (g.kind === kind && String(g.id) === String(id)) return g;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// ------------------------------------------------------------------ TREE
+
+function stageName(id) {
+  const s = DATA.stages.find(s => s.id === id);
+  return s ? s.name : null;
+}
+
+function treeRow(i, depth) {
+  const m = i.metrics || {};
+  const pad = depth * 22;
+  const own = i.own_stage_id != null;
+  const stageLabel = i.stage_id != null
+    ? `<span class="badge badge-sm ${own ? "badge-primary" : "badge-ghost"}"
+             title="${own ? "Assegnata direttamente" : "Ereditata da " + (KIND_LABEL[i.stage_inherited_from] || "livello superiore")}">
+         ${esc(stageName(i.stage_id) || "?")}${own ? "" : " ↑"}
+       </span>`
+    : '<span class="text-xs opacity-30">—</span>';
+  const kids = (i.children || []).length;
+  const isOpen = expanded.has(i.kind + ":" + i.id);
+  const caret = kids
+    ? `<button class="btn btn-ghost btn-xs px-1 toggle" data-key="${i.kind}:${esc(i.id)}">${isOpen ? "▾" : "▸"}</button>`
+    : '<span class="inline-block w-5"></span>';
+
+  return `
+    <tr class="hover">
+      <td style="padding-left:${pad}px" class="max-w-md">
+        <div class="flex items-center gap-1">
+          ${caret}
+          <span class="badge badge-ghost badge-xs">${KIND_LABEL[i.kind]}</span>
+          <span class="text-xs truncate" title="${esc(i.name)}">${esc(i.name)}</span>
+        </div>
+      </td>
+      <td>${stageLabel}</td>
+      <td class="max-w-xs">${tagBadges(i.effective_tags || [], i.inherited_dimensions) || '<span class="opacity-30 text-xs">—</span>'}</td>
+      <td class="text-right text-xs">${fmt(m.impressions)}</td>
+      <td class="text-right text-xs">${eur(m.spend)}</td>
+      <td class="text-right text-xs">${fmt(m.leads)}</td>
+      <td><button class="btn btn-xs edit-btn" data-kind="${i.kind}" data-id="${esc(i.id)}">tag</button></td>
+    </tr>
+    ${isOpen ? (i.children || []).map(c => treeRow(c, depth + 1)).join("") : ""}`;
+}
+
+function renderTree() {
+  const ft = $("f-tree").value.toLowerCase();
+  let items = itemsOf(treeKind);
+  if (ft) {
+    items = items.filter(i =>
+      i.name.toLowerCase().includes(ft) ||
+      (i.children || []).some(c => c.name.toLowerCase().includes(ft) ||
+        (c.children || []).some(g => g.name.toLowerCase().includes(ft))));
+  }
+  const body = items.map(i => treeRow(i, 0)).join("");
+  $("tree-table").innerHTML = `
+    <thead><tr>
+      <th>elemento</th><th>fase</th><th>tag</th>
+      <th class="text-right">impression</th><th class="text-right">spesa</th><th class="text-right">lead</th><th></th>
+    </tr></thead>
+    <tbody>${body || '<tr><td colspan="7" class="opacity-50">nessun elemento</td></tr>'}</tbody>`;
+
+  $("tree-table").querySelectorAll(".toggle").forEach(b => {
+    b.onclick = () => {
+      const k = b.dataset.key;
+      expanded.has(k) ? expanded.delete(k) : expanded.add(k);
+      renderTree();
+    };
+  });
+  $("tree-table").querySelectorAll(".edit-btn").forEach(b => {
+    b.onclick = () => openTagModal(b.dataset.kind, b.dataset.id);
+  });
+}
+
+function allKeys(items, acc) {
+  items.forEach(i => {
+    if ((i.children || []).length) { acc.add(i.kind + ":" + i.id); allKeys(i.children, acc); }
+  });
+  return acc;
+}
+
+// ----------------------------------------------------------------- MODAL
+
+function openTagModal(kind, id) {
+  const item = findItem(kind, id);
+  if (!item) return;
+  editing = item;
+
+  $("tag-modal-title").textContent = item.name;
+  const inh = Object.entries(item.inherited_dimensions || {});
+  $("tag-modal-sub").innerHTML =
+    `${KIND_LABEL[kind]} · id ${esc(item.id)}` +
+    (inh.length ? ` · eredita ${inh.length} dimension${inh.length > 1 ? "i" : "e"} dal livello superiore` : "");
+
+  $("t-stage").innerHTML = `<option value="">— nessuna (eredita) —</option>` +
+    DATA.stages.map(s => `<option value="${s.id}" ${item.own_stage_id === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+
+  const ownSet = new Set(item.own_tag_ids || []);
+  $("t-dimensions").innerHTML = DATA.dimensions.map(d => {
+    const inheritedFrom = (item.inherited_dimensions || {})[d.slug];
+    const note = inheritedFrom
+      ? `<span class="text-[10px] opacity-60">ereditata da ${KIND_LABEL[inheritedFrom] || inheritedFrom} — selezionane uno per sovrascrivere</span>`
+      : "";
+    return `
+      <div>
+        <div class="text-xs font-semibold opacity-70">${esc(d.name)} ${note}</div>
+        <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1">
+          ${d.tags.map(t => `
+            <label class="label cursor-pointer justify-start gap-1 py-0">
+              <input type="checkbox" class="checkbox checkbox-xs t-tag" value="${t.id}" ${ownSet.has(t.id) ? "checked" : ""}>
+              <span class="label-text text-xs">${esc(t.name)}</span>
+            </label>`).join("")}
+        </div>
+      </div>`;
+  }).join("");
+
+  $("tag-modal").showModal();
+}
+
+$("t-save").onclick = async () => {
+  if (!editing) return;
+  const stageRaw = $("t-stage").value;
+  const tagIds = [...document.querySelectorAll(".t-tag:checked")].map(cb => Number(cb.value));
+  const ok = await save(editing, { stage_id: stageRaw ? Number(stageRaw) : null, tag_ids: tagIds });
+  if (!ok) return;
+  $("tag-modal").close();
+  await load();
+};
+
+// ------------------------------------------------------------------ boot
+
+function renderViewTabs() {
+  $("view-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.v === view);
+    b.onclick = () => { view = b.dataset.v; renderAll(); };
+  });
+  $("view-board").classList.toggle("hidden", view !== "board");
+  $("view-tree").classList.toggle("hidden", view !== "tree");
+}
+
+function renderKindTabs() {
+  $("kind-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.k === boardKind);
+    b.onclick = () => { boardKind = b.dataset.k; renderBoard(); };
+  });
+  $("tree-kind-tabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.k === treeKind);
+    b.onclick = () => { treeKind = b.dataset.k; renderTree(); };
+  });
+}
+
+function renderAll() {
+  renderViewTabs();
+  renderKindTabs();
+  if (view === "board") renderBoard(); else renderTree();
+}
+
+$("f-board").addEventListener("input", renderBoard);
+$("f-tree").addEventListener("input", renderTree);
+$("btn-expand").onclick = () => { expanded = allKeys(itemsOf(treeKind), new Set()); renderTree(); };
+$("btn-collapse").onclick = () => { expanded = new Set(); renderTree(); };
+$("btn-reload").onclick = load;
+
+async function load() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    DATA = await r.json();
+    if (!DATA.campaigns.length && !DATA.boosted.length && !DATA.organic.length) {
+      $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return;
+    }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    renderAll();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}

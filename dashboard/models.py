@@ -73,12 +73,50 @@ class FunnelKPI(models.Model):
         ('percent', 'Percentuale'),
         ('ratio', 'Rapporto'),
     ]
+    # Where the numbers come from. 'manual' keeps the original behaviour
+    # (values typed in by hand as FunnelKPIValue); the others compute the
+    # series from real synced data, restricted to the entities assigned to
+    # this KPI's stage.
+    SOURCE_CHOICES = [
+        ('manual', 'Manuale'),
+        ('paid', 'Meta paid (campagne/adset/ad)'),
+        ('organic', 'Post organici'),
+        ('wundt', 'CRM wundt'),
+    ]
+    # How the per-day values roll up into a week/month bucket. 'ratio' is the
+    # important one: a cost-per-X or a rate must be recomputed as
+    # sum(numerator)/sum(denominator) over the bucket, never averaged from the
+    # daily figures - averaging ratios silently gives the wrong number as soon
+    # as the daily volumes differ.
+    AGGREGATION_CHOICES = [
+        ('sum', 'Somma'),
+        ('avg', 'Media'),
+        ('ratio', 'Rapporto pesato (num. ÷ den.)'),
+    ]
+
     stage = models.ForeignKey(FunnelStage, on_delete=models.CASCADE, related_name='kpis')
     name = models.CharField(max_length=150)
     unit = models.CharField(max_length=10, choices=UNIT_CHOICES, default='count')
     target_value = models.FloatField(
         null=True, blank=True,
         help_text='Obiettivo opzionale, mostrato come riferimento sul grafico.')
+    source = models.CharField(
+        max_length=10, choices=SOURCE_CHOICES, default='manual',
+        help_text='Da dove arrivano i numeri. "Manuale" usa i valori inseriti a mano.')
+    metric = models.CharField(
+        max_length=60, blank=True,
+        help_text='Metrica di origine (es. impressions, reach, spend). Vedi METRIC_REGISTRY in views.py.')
+    metric_denominator = models.CharField(
+        max_length=60, blank=True,
+        help_text='Solo per aggregazione "rapporto": la metrica al denominatore (es. spend ÷ leads = CPL).')
+    aggregation = models.CharField(max_length=10, choices=AGGREGATION_CHOICES, default='sum')
+    scale = models.FloatField(
+        default=1.0,
+        help_text='Moltiplicatore applicato al risultato, es. 100 per trasformare un rapporto in percentuale.')
+    entity_level = models.CharField(
+        max_length=20, blank=True,
+        help_text='Solo per fonte "paid": limita il calcolo a un livello preciso '
+                  '(campaign / ad_set / ad). Vuoto = qualunque livello assegnato alla fase.')
     order = models.PositiveIntegerField(default=1)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -88,6 +126,10 @@ class FunnelKPI(models.Model):
 
     def __str__(self):
         return f'{self.stage.name} · {self.name}'
+
+    @property
+    def is_computed(self):
+        return self.source != 'manual' and bool(self.metric)
 
 
 class FunnelKPIValue(models.Model):
@@ -363,6 +405,46 @@ class ContentPiece(models.Model):
     @property
     def effective_date(self):
         return self.published_date or self.planned_date
+
+
+class TaggedEntity(models.Model):
+    """Tagging + funnel-stage assignment for one real Meta advertising object,
+    keyed by its Meta id. Deliberately an *overlay*: names, hierarchy and
+    metrics all stay in the synced Airbyte data, and only the decisions
+    (which stage, which tags) live here, so a re-sync never fights with what
+    was tagged by hand.
+
+    Tags resolve down the hierarchy campaign -> ad set -> ad, per dimension:
+    an ad set that carries a tag of dimension "Audience" overrides its
+    campaign's Audience tag, while dimensions it says nothing about are
+    inherited unchanged. Same for ads under an ad set. This is what makes it
+    possible to tag broadly at the top and refine only where it matters.
+
+    Organic posts are deliberately NOT stored here - they're tagged through
+    ContentPiece (the editorial calendar), so the same post carries one set
+    of tags whether it's edited from the calendar or from the tagging page.
+    """
+    KIND_CHOICES = [
+        ('campaign', 'Campagna'),
+        ('ad_set', 'Ad set'),
+        ('ad', 'Ad'),
+    ]
+
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES, db_index=True)
+    external_id = models.CharField(max_length=100, db_index=True, help_text='ID Meta reale.')
+    stage = models.ForeignKey(FunnelStage, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name='tagged_entities')
+    tags = models.ManyToManyField(Tag, blank=True, related_name='tagged_entities')
+    notes = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [('kind', 'external_id')]
+        ordering = ['kind', 'id']
+
+    def __str__(self):
+        return f'{self.get_kind_display()} {self.external_id}'
 
 
 class MarketingEvent(models.Model):
