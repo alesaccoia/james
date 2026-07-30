@@ -10,7 +10,8 @@
   </div>
   <div class="grow"></div>
   <select id="f-plan" class="select select-bordered select-sm"></select>
-  <a href="/admin/dashboard/budgetplan/" class="btn btn-sm btn-outline" target="_blank" rel="noopener">Modifica piano</a>
+  <a href="{% url 'dashboard:piani' %}" class="btn btn-sm btn-outline">Tutti i piani</a>
+  <a href="/admin/dashboard/budgetplan/" class="btn btn-sm btn-outline" target="_blank" rel="noopener">Modifica voci</a>
   <button class="btn btn-sm" id="btn-reload">Ricarica</button>
 </div>
 
@@ -113,7 +114,9 @@ const pct = (v) => v == null ? "—" : fmtN.format(v) + "%";
 const pct1 = (v) => v == null ? "—" : new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 }).format(v) + "%";
 
 let DATA = null;
-let planId = null;
+// Honour ?plan=<id> so links from the Piani page (and a freshly created plan)
+// land on the right month instead of silently falling back to the active one.
+let planId = new URLSearchParams(location.search).get("plan");
 let charts = { stages: null, dims: {} };
 
 function colorOf(tag, i) {

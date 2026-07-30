@@ -1,5 +1,6 @@
 import json
 from collections import defaultdict
+from datetime import date, timedelta
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -9,9 +10,10 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
 
-from .models import (AirbyteRecord, BudgetPlan, ChannelCadence, ContentPiece,
-                     FunnelKPI, FunnelStage, FunnelStageSource, MarketingEvent,
-                     Tag, TagDimension, TaggedEntity)
+from .models import (AirbyteRecord, BudgetLine, BudgetPlan, ChannelCadence,
+                     ComparePreset, ContentPiece, FunnelKPI, FunnelStage,
+                     FunnelStageSource, MarketingEvent, Tag, TagDimension,
+                     TaggedEntity)
 
 # One entry per Airbyte stream we know how to turn into marketing KPIs.
 # Add a new entry here whenever a new source (Google Ads, TikTok Ads,
@@ -484,6 +486,8 @@ def compare(request):
     metrics = _build_metrics()
     cfg = {
         'data_url': reverse('dashboard:data_compare'),
+        'home_url': reverse('dashboard:data_home'),
+        'calendario_url': reverse('dashboard:calendario'),
         'metrics': {k: {'label': v['label'], 'source': v['source'], 'unit': v['unit']}
                     for k, v in metrics.items()},
     }
@@ -494,9 +498,112 @@ def compare(request):
 
 
 @login_required
+def data_home(request):
+    """The always-on homepage blocks: site analytics, per-campaign daily
+    delivery, CPL, and where the editorial calendar stands right now."""
+    today = timezone.now().date()
+    today_s = today.isoformat()
+    horizon = (today + timedelta(days=14)).isoformat()
+
+    # --- GA4 sessions/users, daily
+    analytics = []
+    for d in _stream_rows('ga_website_overview'):
+        date_s = _ga_date(d.get('date'))
+        if not date_s:
+            continue
+        analytics.append({'date': date_s, 'sessions': _num(d.get('sessions')),
+                          'users': _num(d.get('totalUsers'))})
+    analytics.sort(key=lambda r: r['date'])
+
+    # --- per-campaign daily spend/leads, plus a blended daily CPL
+    per_campaign = defaultdict(lambda: defaultdict(lambda: {'spend': 0.0, 'leads': 0.0}))
+    daily = defaultdict(lambda: {'spend': 0.0, 'leads': 0.0, 'impressions': 0.0})
+    for d in _stream_rows('fb_ads_insights'):
+        date_s = str(d.get('date_start') or '')[:10]
+        if not date_s:
+            continue
+        name = d.get('campaign_name') or '(senza nome)'
+        spend, leads = _num(d.get('spend')), _fb_action_value(d, 'lead')
+        per_campaign[name][date_s]['spend'] += spend
+        per_campaign[name][date_s]['leads'] += leads
+        daily[date_s]['spend'] += spend
+        daily[date_s]['leads'] += leads
+        daily[date_s]['impressions'] += _num(d.get('impressions'))
+
+    campaigns = [{
+        'name': name,
+        'total_spend': sum(v['spend'] for v in days.values()),
+        'series': [{'date': dt, **vals} for dt, vals in sorted(days.items())],
+    } for name, days in per_campaign.items()]
+    campaigns.sort(key=lambda c: -c['total_spend'])
+
+    # CPL carries spend and leads so any bucketing stays a weighted ratio.
+    cpl = [{'date': dt, 'spend': v['spend'], 'leads': v['leads'],
+            'value': (v['spend'] / v['leads']) if v['leads'] else None}
+           for dt, v in sorted(daily.items())]
+
+    # --- editorial calendar: what's coming and what's being worked on
+    def _piece(p):
+        return {'id': p.pk, 'title': p.title, 'channel': p.channel,
+                'format': p.get_content_format_display(), 'status': p.status,
+                'status_label': p.get_status_display(), 'owner': p.owner,
+                'date': p.effective_date.isoformat(),
+                'stage': p.stage.name if p.stage else None,
+                'tags': [{'name': t.name, 'color': t.color or None} for t in p.tags.all()]}
+
+    qs = ContentPiece.objects.select_related('stage').prefetch_related('tags')
+    # The three buckets are deliberately mutually exclusive, in priority order,
+    # so nothing shows up twice and each column is a distinct call to action:
+    #   in ritardo    -> doveva uscire e non è uscito
+    #   in lavorazione-> ci si sta lavorando, data ancora davanti
+    #   in arrivo     -> pianificato a breve ma non ancora iniziato
+    active = qs.exclude(status__in=['pubblicato', 'archiviato'])
+    late = [_piece(p) for p in active.filter(planned_date__lt=today_s).order_by('planned_date')[:12]]
+    future = active.filter(planned_date__gte=today_s)
+    in_progress = [_piece(p) for p in future.filter(status__in=['brief', 'produzione', 'pronto'])
+                   .order_by('planned_date')[:12]]
+    upcoming = [_piece(p) for p in future.filter(status='idea', planned_date__lte=horizon)
+                .order_by('planned_date')[:12]]
+
+    return JsonResponse({
+        'analytics': analytics,
+        'campaigns': campaigns[:12],
+        'cpl': cpl,
+        'calendar': {'upcoming': upcoming, 'in_progress': in_progress, 'late': late,
+                     'total': qs.count()},
+    })
+
+
+@login_required
 def data_compare(request):
     metrics = _build_metrics()
     return JsonResponse({'metrics': metrics})
+
+
+@login_required
+def compare_presets(request):
+    """List, save and delete Confronto presets.
+
+    GET    -> every preset
+    POST   -> {name, config} creates or overwrites by name
+    DELETE -> ?name=... removes one
+    """
+    if request.method == 'POST':
+        payload = json.loads(request.body or '{}')
+        name = (payload.get('name') or '').strip()[:120]
+        if not name:
+            return JsonResponse({'ok': False, 'error': 'Serve un nome'}, status=400)
+        preset, created = ComparePreset.objects.update_or_create(
+            name=name, defaults={'config': payload.get('config') or {}})
+        return JsonResponse({'ok': True, 'created': created, 'id': preset.pk})
+
+    if request.method == 'DELETE':
+        name = (request.GET.get('name') or '').strip()
+        deleted, _ = ComparePreset.objects.filter(name=name).delete()
+        return JsonResponse({'ok': bool(deleted)})
+
+    return JsonResponse({'presets': [
+        {'name': p.name, 'config': p.config} for p in ComparePreset.objects.all()]})
 
 
 # --------------------------------------------------------- Marketing events
@@ -1302,6 +1409,183 @@ def tag_save(request):
         order=(dimension.tags.count() or 0) + 1)
     messages.success(request, f'Tag "{name}" aggiunto a {dimension.name}.')
     return redirect('dashboard:pianificazione')
+
+
+# ------------------------------------------------------------- piani budget
+
+MESI_IT = {1: 'gennaio', 2: 'febbraio', 3: 'marzo', 4: 'aprile', 5: 'maggio', 6: 'giugno',
+           7: 'luglio', 8: 'agosto', 9: 'settembre', 10: 'ottobre', 11: 'novembre', 12: 'dicembre'}
+
+
+def _month_bounds(year, month):
+    """(first day, last day) of a month, without pulling in a date library."""
+    start = date(year, month, 1)
+    nxt = date(year + (month == 12), (month % 12) + 1, 1)
+    return start, nxt - timedelta(days=1)
+
+
+def _month_label(year, month):
+    return f'{MESI_IT[month]} {year}'
+
+
+def _spend_by_month_and_stage(insight_rows, taggings, ad_parent, adset_parent):
+    """{month: {'total': x, 'by_stage': {stage_id|None: y}}} over every synced
+    day, so past months can be reviewed once their campaigns are tagged —
+    the whole point of being able to look backwards."""
+    out = defaultdict(lambda: {'total': 0.0, 'by_stage': defaultdict(float)})
+    stage_cache = {}
+    for d in insight_rows:
+        day = str(d.get('date_start') or '')[:10]
+        if len(day) < 7:
+            continue
+        spend = _num(d.get('spend'))
+        if not spend:
+            continue
+        aid, asid, cid = (str(d.get('ad_id') or ''), str(d.get('adset_id') or ''),
+                          str(d.get('campaign_id') or ''))
+        cache_key = (aid, asid, cid)
+        if cache_key not in stage_cache:
+            resolved, _ = _resolve_stage('ad', aid, taggings, ad_parent, adset_parent)
+            if resolved is None and asid:
+                resolved, _ = _resolve_stage('ad_set', asid, taggings, ad_parent, adset_parent)
+            if resolved is None and cid:
+                resolved, _ = _resolve_stage('campaign', cid, taggings, ad_parent, adset_parent)
+            stage_cache[cache_key] = resolved
+        month = day[:7]
+        out[month]['total'] += spend
+        out[month]['by_stage'][stage_cache[cache_key]] += spend
+    return out
+
+
+@login_required
+def piani(request):
+    cfg = {'data_url': reverse('dashboard:data_piani'),
+           'save_url': reverse('dashboard:piano_save'),
+           'detail_url': reverse('dashboard:pianificazione')}
+    return render(request, 'dashboard/piani.html', {
+        'cfg_json': json.dumps(cfg),
+        'has_data': True,
+    })
+
+
+@login_required
+def data_piani(request):
+    insight_rows = list(_stream_rows('fb_ads_insights'))
+    ad_parent, adset_parent, _n = _meta_hierarchy(insight_rows)
+    taggings = _load_taggings()
+    by_month = _spend_by_month_and_stage(insight_rows, taggings, ad_parent, adset_parent)
+
+    plans = []
+    covered_months = set()
+    for p in BudgetPlan.objects.prefetch_related('lines__stage'):
+        # A plan can span any range; sum the months it touches.
+        actual, by_stage = 0.0, defaultdict(float)
+        for month, data in by_month.items():
+            m_start, _ = _month_bounds(int(month[:4]), int(month[5:7]))
+            if p.period_start <= m_start <= p.period_end:
+                covered_months.add(month)
+                actual += data['total']
+                for sid, v in data['by_stage'].items():
+                    by_stage[sid] += v
+        lines = list(p.lines.all())
+        planned = sum(l.resolved_amount or 0 for l in lines if l.is_media)
+        plans.append({
+            'id': p.pk, 'name': p.name,
+            'period_start': p.period_start.isoformat(), 'period_end': p.period_end.isoformat(),
+            'total_budget': p.total_budget, 'is_active': p.is_active,
+            'n_lines': len(lines), 'planned_amount': planned, 'actual_spend': actual,
+            'by_stage': {str(k) if k else 'none': v for k, v in by_stage.items()},
+            'notes': p.notes,
+        })
+
+    # Months that really had spend but nobody planned - the gap the user wants
+    # to be able to fill in retroactively.
+    orphans = []
+    for month, data in sorted(by_month.items()):
+        if month in covered_months:
+            continue
+        y, m = int(month[:4]), int(month[5:7])
+        orphans.append({'month': month, 'label': _month_label(y, m), 'spend': data['total'],
+                        'by_stage': {str(k) if k else 'none': v for k, v in data['by_stage'].items()}})
+
+    return JsonResponse({
+        'plans': sorted(plans, key=lambda p: p['period_start']),
+        'months_without_plan': orphans,
+        'stages': [{'id': s.pk, 'name': s.name, 'slug': s.slug}
+                   for s in FunnelStage.objects.filter(is_active=True)],
+    })
+
+
+@login_required
+def piano_save(request):
+    """Create a plan for a month, optionally copying another plan's lines.
+
+    Copying carries over the whole structure (labels, stages, tags, source
+    links, percentages) but re-resolves fixed amounts against the new total,
+    so duplicating a plan into a month with a different budget keeps the
+    intended split rather than the old euro figures.
+    """
+    if request.method != 'POST':
+        return redirect('dashboard:piani')
+
+    month = (request.POST.get('month') or '').strip()          # YYYY-MM
+    name = (request.POST.get('name') or '').strip()
+    budget_raw = (request.POST.get('total_budget') or '').strip()
+    copy_from = (request.POST.get('copy_from') or '').strip()
+
+    try:
+        year, mon = int(month[:4]), int(month[5:7])
+        start, end = _month_bounds(year, mon)
+    except (ValueError, IndexError, KeyError):
+        messages.error(request, 'Mese non valido: usa il formato AAAA-MM.')
+        return redirect('dashboard:piani')
+
+    if BudgetPlan.objects.filter(period_start=start).exists():
+        messages.error(request, f'Esiste già un piano che parte dal {start}.')
+        return redirect('dashboard:piani')
+
+    try:
+        total = float(budget_raw) if budget_raw else 0.0
+    except ValueError:
+        total = 0.0
+
+    plan = BudgetPlan.objects.create(
+        name=name or f'Piano media {_month_label(year, mon)}',
+        period_start=start, period_end=end, total_budget=total)
+
+    copied = 0
+    if copy_from:
+        source = BudgetPlan.objects.filter(pk=copy_from).prefetch_related('lines__tags').first()
+        if source:
+            for line in source.lines.all():
+                new_line = BudgetLine.objects.create(
+                    plan=plan, label=line.label, stage=line.stage, source=line.source,
+                    percent=line.percent,
+                    # A fixed amount only keeps its meaning if the budget is the
+                    # same; otherwise convert it to the equivalent share.
+                    amount=(line.amount if (line.amount is not None and
+                                            source.total_budget == plan.total_budget) else None),
+                    is_media=line.is_media, order=line.order, notes=line.notes)
+                if line.amount is not None and source.total_budget and source.total_budget != total:
+                    new_line.percent = line.amount / source.total_budget * 100
+                    new_line.save(update_fields=['percent'])
+                new_line.tags.set(line.tags.all())
+                copied += 1
+
+    messages.success(request, f'Piano "{plan.name}" creato'
+                              + (f' copiando {copied} voci da "{source.name}".' if copy_from and copied else '.'))
+    return redirect(f'{reverse("dashboard:pianificazione")}?plan={plan.pk}')
+
+
+@login_required
+def piano_delete(request, pk):
+    if request.method == 'POST':
+        plan = BudgetPlan.objects.filter(pk=pk).first()
+        if plan:
+            name = plan.name
+            plan.delete()
+            messages.success(request, f'Piano "{name}" eliminato.')
+    return redirect('dashboard:piani')
 
 
 # ------------------------------------------------------------ tagging Meta

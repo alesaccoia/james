@@ -1,0 +1,315 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Piani budget{% endblock %}
+{% block nav_group_strategia %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Piani budget</h1>
+    <p class="text-sm opacity-60">Tutti i mesi, passati e futuri: previsto contro speso reale, per fase del funnel</p>
+  </div>
+  <div class="grow"></div>
+  <button class="btn btn-sm btn-primary" onclick="openPlanForm()">Nuovo piano</button>
+  <button class="btn btn-sm" id="btn-reload">Ricarica</button>
+</div>
+
+<div id="content">
+
+  <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="kpis"></div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Previsto contro speso, mese per mese</h2>
+      <p class="text-sm opacity-60">Lo speso è reale, preso da Meta. I mesi senza piano compaiono comunque: puoi crearne uno a posteriori per analizzarli.</p>
+      <div class="h-72 relative"><canvas id="chart-months"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Piani</h2>
+      <p class="text-sm opacity-60">Apri un piano per lavorarci sulle voci, oppure duplicalo su un altro mese mantenendo la stessa struttura.</p>
+      <div class="overflow-x-auto">
+        <table class="table table-zebra table-sm" id="plans-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <div id="orphans-card" class="card bg-base-100 shadow mb-6 hidden">
+    <div class="card-body">
+      <h2 class="card-title">Mesi con spesa ma senza piano</h2>
+      <p class="text-sm opacity-60">Hanno avuto spesa reale su Meta ma nessun piano collegato. Creane uno per rileggere a posteriori come è stato distribuito il budget — la ripartizione per fase si popola man mano che tagghi le campagne vecchie nella pagina <a href="{% url 'dashboard:tagging' %}" class="link">Tagging</a>.</p>
+      <div class="overflow-x-auto">
+        <table class="table table-zebra table-sm" id="orphans-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">Ripartizione per fase</h2>
+      <p class="text-sm opacity-60">Come la spesa reale si è distribuita fra le fasi, mese per mese. "Non assegnata" è spesa di campagne non ancora collegate a nessuna fase.</p>
+      <div class="h-72 relative"><canvas id="chart-stages"></canvas></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Modal: new / duplicate plan -->
+<dialog id="plan-modal" class="modal">
+  <div class="modal-box">
+    <h3 class="font-bold text-lg mb-3" id="plan-modal-title">Nuovo piano</h3>
+    <form method="post" action="{% url 'dashboard:piano_save' %}" class="flex flex-col gap-3">
+      {% csrf_token %}
+      <label class="form-control">
+        <span class="label-text text-xs">Mese</span>
+        <input type="month" name="month" id="p-month" class="input input-bordered input-sm" required>
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Nome (lasciando vuoto viene generato dal mese)</span>
+        <input type="text" name="name" id="p-name" class="input input-bordered input-sm" placeholder="es. Piano media settembre 2026">
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Budget media del periodo (€)</span>
+        <input type="number" name="total_budget" id="p-budget" step="1" min="0" class="input input-bordered input-sm">
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Copia le voci da</span>
+        <select name="copy_from" id="p-copy" class="select select-bordered select-sm"></select>
+        <span class="label-text-alt text-xs opacity-60 mt-1">
+          Copia struttura, fasi e tag. Gli importi fissi vengono convertiti nella quota % equivalente
+          se il budget del nuovo mese è diverso, così la ripartizione resta quella voluta.
+        </span>
+      </label>
+      <div class="flex justify-end gap-2 mt-2">
+        <button type="button" class="btn btn-sm" onclick="document.getElementById('plan-modal').close()">Annulla</button>
+        <button type="submit" class="btn btn-sm btn-primary">Crea</button>
+      </div>
+    </form>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>chiudi</button></form>
+</dialog>
+
+<form method="post" id="delete-form" class="hidden">{% csrf_token %}</form>
+
+<script>const PIANI_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = PIANI_CFG.data_url;
+const DETAIL_URL = PIANI_CFG.detail_url;
+const C_PLANNED = "#0d2a8c";
+const C_ACTUAL = "#f96a34";
+const STAGE_PALETTE = ["#0d2a8c", "#f96a34", "#ffc83d", "#34d399", "#a78bfa", "#94a3b8"];
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 0 });
+const fmtEUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const eur = (v) => v == null ? "—" : fmtEUR.format(v);
+const pct = (v) => v == null ? "—" : fmtN.format(v) + "%";
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+let DATA = null;
+let charts = { months: null, stages: null };
+
+function monthOf(iso) { return (iso || "").slice(0, 7); }
+
+// Every month that matters: those with a plan, plus those with spend but none.
+function allMonths() {
+  const set = new Set();
+  DATA.plans.forEach(p => set.add(monthOf(p.period_start)));
+  DATA.months_without_plan.forEach(o => set.add(o.month));
+  return [...set].sort();
+}
+
+function planForMonth(m) { return DATA.plans.find(p => monthOf(p.period_start) === m); }
+function orphanForMonth(m) { return DATA.months_without_plan.find(o => o.month === m); }
+
+function stageName(id) {
+  if (id === "none" || id == null) return "Non assegnata";
+  const s = DATA.stages.find(x => String(x.id) === String(id));
+  return s ? s.name : "?";
+}
+
+function renderKPIs() {
+  const totPlanned = DATA.plans.reduce((s, p) => s + (p.planned_amount || 0), 0);
+  const totActual = DATA.plans.reduce((s, p) => s + (p.actual_spend || 0), 0);
+  const orphanSpend = DATA.months_without_plan.reduce((s, o) => s + o.spend, 0);
+  const defs = [
+    { name: "Piani", val: fmtN.format(DATA.plans.length) },
+    { name: "Previsto (tutti i piani)", val: eur(totPlanned) },
+    { name: "Speso nei mesi pianificati", val: eur(totActual) },
+    { name: "Speso in mesi senza piano", val: eur(orphanSpend),
+      hint: orphanSpend > 0 ? "Crea un piano per quei mesi per poterli analizzare" : "" },
+  ];
+  $("kpis").innerHTML = defs.map(d => `
+    <div class="stat" ${d.hint ? `title="${esc(d.hint)}"` : ""}>
+      <div class="stat-title">${d.name}${d.hint ? ' <span class="text-warning">⚠</span>' : ""}</div>
+      <div class="stat-value text-2xl">${d.val}</div>
+    </div>`).join("");
+}
+
+function renderMonthsChart() {
+  if (charts.months) charts.months.destroy();
+  const months = allMonths();
+  if (!months.length) return;
+  charts.months = new Chart($("chart-months"), {
+    type: "bar",
+    data: {
+      labels: months,
+      datasets: [
+        { label: "Previsto", backgroundColor: C_PLANNED, borderRadius: 2,
+          data: months.map(m => { const p = planForMonth(m); return p ? p.planned_amount : 0; }) },
+        { label: "Speso reale", backgroundColor: C_ACTUAL, borderRadius: 2,
+          data: months.map(m => {
+            const p = planForMonth(m); if (p) return p.actual_spend;
+            const o = orphanForMonth(m); return o ? o.spend : 0;
+          }) },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: { x: { grid: { display: false } },
+                y: { beginAtZero: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => fmtEUR.format(v) } } },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${eur(ctx.parsed.y)}` } },
+      },
+    },
+  });
+}
+
+function renderStagesChart() {
+  if (charts.stages) charts.stages.destroy();
+  const months = allMonths();
+  if (!months.length) return;
+  const stageIds = [...DATA.stages.map(s => String(s.id)), "none"];
+  charts.stages = new Chart($("chart-stages"), {
+    type: "bar",
+    data: {
+      labels: months,
+      datasets: stageIds.map((sid, i) => ({
+        label: stageName(sid),
+        backgroundColor: sid === "none" ? "#cbd5e1" : STAGE_PALETTE[i % STAGE_PALETTE.length],
+        borderRadius: 2,
+        data: months.map(m => {
+          const src = planForMonth(m) || orphanForMonth(m);
+          return src ? (src.by_stage || {})[sid] || 0 : 0;
+        }),
+      })),
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: { x: { stacked: true, grid: { display: false } },
+                y: { stacked: true, beginAtZero: true, grid: { color: "#e5e7eb" },
+                     ticks: { callback: v => fmtEUR.format(v) } } },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 10, font: { size: 10 } } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${eur(ctx.parsed.y)}` } },
+      },
+    },
+  });
+}
+
+function renderPlansTable() {
+  const today = new Date().toISOString().slice(0, 10);
+  const body = DATA.plans.map(p => {
+    const used = p.total_budget ? (p.actual_spend / p.total_budget * 100) : null;
+    const when = p.period_end < today ? "passato" : (p.period_start > today ? "futuro" : "in corso");
+    const whenBadge = { passato: "badge-ghost", "in corso": "badge-success", futuro: "badge-info" }[when];
+    return `<tr>
+      <td>
+        <a href="${DETAIL_URL}?plan=${p.id}" class="link link-primary font-medium">${esc(p.name)}</a>
+        <span class="badge badge-xs ${whenBadge} ml-1">${when}</span>
+      </td>
+      <td class="text-xs whitespace-nowrap">${p.period_start} → ${p.period_end}</td>
+      <td class="text-right">${eur(p.total_budget)}</td>
+      <td class="text-right">${eur(p.planned_amount)}</td>
+      <td class="text-right">${eur(p.actual_spend)}</td>
+      <td class="text-right ${used != null && used > 105 ? "text-error" : ""}">${used == null ? "—" : pct(used)}</td>
+      <td class="text-right">${p.n_lines}</td>
+      <td class="whitespace-nowrap">
+        <button class="btn btn-xs" onclick="openPlanForm(${p.id})">duplica</button>
+        <button class="btn btn-xs btn-ghost text-error" onclick="deletePlan(${p.id}, '${esc(p.name).replace(/'/g, "\\'")}')">×</button>
+      </td>
+    </tr>`;
+  }).join("");
+  $("plans-table").innerHTML =
+    `<thead><tr><th>piano</th><th>periodo</th><th class="text-right">budget</th><th class="text-right">previsto</th>
+      <th class="text-right">speso</th><th class="text-right">usato</th><th class="text-right">voci</th><th></th></tr></thead>
+     <tbody>${body || '<tr><td colspan="8" class="opacity-50">nessun piano — creane uno con "Nuovo piano"</td></tr>'}</tbody>`;
+}
+
+function renderOrphansTable() {
+  const rows = DATA.months_without_plan;
+  $("orphans-card").classList.toggle("hidden", rows.length === 0);
+  if (!rows.length) return;
+  const body = rows.map(o => `
+    <tr>
+      <td>${esc(o.label)}</td>
+      <td class="text-right">${eur(o.spend)}</td>
+      <td class="text-xs opacity-60">${Object.entries(o.by_stage || {})
+          .sort((a, b) => b[1] - a[1])
+          .map(([sid, v]) => `${esc(stageName(sid))} ${eur(v)}`).join(" · ") || "—"}</td>
+      <td class="text-right"><button class="btn btn-xs btn-primary" onclick="openPlanForm(null, '${o.month}')">crea piano</button></td>
+    </tr>`).join("");
+  $("orphans-table").innerHTML =
+    `<thead><tr><th>mese</th><th class="text-right">speso</th><th>ripartizione per fase</th><th></th></tr></thead>
+     <tbody>${body}</tbody>`;
+}
+
+// ----------------------------------------------------------------- actions
+
+function openPlanForm(copyFromId, presetMonth) {
+  const copyFrom = copyFromId ? DATA.plans.find(p => p.id === copyFromId) : null;
+  $("plan-modal-title").textContent = copyFrom ? `Duplica "${copyFrom.name}"` : "Nuovo piano";
+
+  // Default to the month after the last plan, so the common case (plan the
+  // next month) needs no typing.
+  let suggested = presetMonth;
+  if (!suggested) {
+    const last = DATA.plans.length ? monthOf(DATA.plans[DATA.plans.length - 1].period_start) : null;
+    if (last) {
+      let [y, m] = last.split("-").map(Number);
+      m += 1; if (m > 12) { m = 1; y += 1; }
+      suggested = `${y}-${String(m).padStart(2, "0")}`;
+    } else {
+      suggested = new Date().toISOString().slice(0, 7);
+    }
+  }
+  $("p-month").value = suggested;
+  $("p-name").value = "";
+  $("p-budget").value = copyFrom ? copyFrom.total_budget : "";
+  $("p-copy").innerHTML = `<option value="">— nessuna copia, piano vuoto —</option>` +
+    DATA.plans.map(p => `<option value="${p.id}" ${copyFrom && p.id === copyFrom.id ? "selected" : ""}>${esc(p.name)} (${p.n_lines} voci)</option>`).join("");
+  $("plan-modal").showModal();
+}
+
+function deletePlan(id, name) {
+  if (!confirm(`Eliminare il piano "${name}"? Le voci di piano verranno eliminate con lui (le assegnazioni delle campagne restano).`)) return;
+  const f = $("delete-form");
+  f.action = `/piani/${id}/elimina/`;
+  f.submit();
+}
+
+function renderAll() {
+  renderKPIs();
+  renderMonthsChart();
+  renderStagesChart();
+  renderPlansTable();
+  renderOrphansTable();
+}
+
+$("btn-reload").onclick = load;
+
+async function load() {
+  const r = await fetch(DATA_URL, { cache: "no-store" });
+  DATA = await r.json();
+  renderAll();
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}

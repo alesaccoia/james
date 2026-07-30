@@ -7,6 +7,8 @@ app_name = 'dashboard'
 urlpatterns = [
     path('', views.compare, name='compare'),
     path('data/compare.json', views.data_compare, name='data_compare'),
+    path('data/compare-presets.json', views.compare_presets, name='compare_presets'),
+    path('data/home.json', views.data_home, name='data_home'),
 
     path('meta-ads/', views.dashboard, name='dashboard'),
     path('meta-ads/data.json', views.data_marketing, name='data_marketing'),
@@ -33,6 +35,11 @@ urlpatterns = [
     path('pianificazione/', views.pianificazione, name='pianificazione'),
     path('pianificazione/data.json', views.data_pianificazione, name='data_pianificazione'),
     path('pianificazione/tag/nuovo/', views.tag_save, name='tag_save'),
+
+    path('piani/', views.piani, name='piani'),
+    path('piani/data.json', views.data_piani, name='data_piani'),
+    path('piani/salva/', views.piano_save, name='piano_save'),
+    path('piani/<int:pk>/elimina/', views.piano_delete, name='piano_delete'),
 
     path('tagging/', views.tagging, name='tagging'),
     path('tagging/data.json', views.data_tagging, name='data_tagging'),

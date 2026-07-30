@@ -21,6 +21,51 @@
 
   <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="overview-kpis"></div>
 
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <div class="card bg-base-100 shadow h-fit">
+      <div class="card-body">
+        <h2 class="card-title text-base">Traffico del sito</h2>
+        <p class="text-sm opacity-60">Sessioni e utenti, ultimi 30 giorni.</p>
+        <div class="h-64 relative"><canvas id="home-analytics"></canvas></div>
+      </div>
+    </div>
+    <div class="card bg-base-100 shadow h-fit">
+      <div class="card-body">
+        <h2 class="card-title text-base">Costo per lead</h2>
+        <p class="text-sm opacity-60">CPL giornaliero (spesa ÷ lead del giorno), ultimi 30 giorni.</p>
+        <div class="h-64 relative"><canvas id="home-cpl"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6 h-fit">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center gap-3">
+        <div>
+          <h2 class="card-title text-base">Andamento giornaliero per campagna</h2>
+          <p class="text-sm opacity-60">Le campagne con più spesa negli ultimi 30 giorni.</p>
+        </div>
+        <div class="grow"></div>
+        <div class="join" id="home-camp-metric">
+          <button class="btn btn-xs join-item" data-m="spend">Spesa</button>
+          <button class="btn btn-xs join-item" data-m="leads">Lead</button>
+        </div>
+      </div>
+      <div class="h-72 relative"><canvas id="home-campaigns"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6 h-fit">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center gap-3 mb-1">
+        <h2 class="card-title text-base">Piano editoriale</h2>
+        <div class="grow"></div>
+        <a href="" id="home-cal-link" class="btn btn-xs btn-outline">Apri calendario</a>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4" id="home-calendar"></div>
+    </div>
+  </div>
+
   <div class="divider">Confronto tra fonti</div>
   <p class="text-sm opacity-60 -mt-4 mb-4">Metti insieme metriche di canali diversi sullo stesso grafico.</p>
 
@@ -39,6 +84,13 @@
       <input type="checkbox" id="chk-events" class="checkbox checkbox-sm">
       <span class="label-text text-sm">Mostra eventi</span>
     </label>
+
+    <div class="grow"></div>
+
+    <!-- Presets: one select + two small buttons, deliberately compact. -->
+    <select id="f-preset" class="select select-bordered select-sm max-w-44" title="Preset salvati"></select>
+    <button class="btn btn-sm btn-outline" id="btn-preset-save" title="Salva la configurazione attuale">Salva vista</button>
+    <button class="btn btn-sm btn-ghost text-error hidden" id="btn-preset-del" title="Elimina il preset selezionato">×</button>
   </div>
 
   <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -263,10 +315,263 @@ function renderAll() {
   renderOverviewKPIs();
   renderChart();
   renderTotals();
+  // Every render is a settled state worth remembering, so reopening the page
+  // lands exactly where it was left.
+  if (typeof rememberCurrent === "function") rememberCurrent();
 }
 
 $("btn-reload").onclick = load;
-$("chk-events").addEventListener("change", renderChart);
+$("chk-events").addEventListener("change", () => { renderChart(); rememberCurrent(); });
+
+// -------------------------------------------------------------- homepage
+// Always-on blocks, independent of the metric picker below: they answer
+// "what's happening right now" without anyone having to configure anything.
+
+let HOME = null;
+let homeCharts = { analytics: null, cpl: null, campaigns: null };
+let homeCampMetric = "spend";
+
+function last30(rows) {
+  const since = daysAgo(30);
+  return rows.filter(r => r.date >= since);
+}
+
+function renderHomeAnalytics() {
+  if (homeCharts.analytics) homeCharts.analytics.destroy();
+  const rows = last30(HOME.analytics || []);
+  if (!rows.length) return;
+  homeCharts.analytics = new Chart($("home-analytics"), {
+    type: "line",
+    data: {
+      labels: rows.map(r => r.date),
+      datasets: [
+        { label: "Sessioni", data: rows.map(r => r.sessions), borderColor: PALETTE[0],
+          backgroundColor: PALETTE[0], borderWidth: 2, pointRadius: 0, tension: .25 },
+        { label: "Utenti", data: rows.map(r => r.users), borderColor: PALETTE[2],
+          backgroundColor: PALETTE[2], borderWidth: 2, pointRadius: 0, tension: .25 },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
+                y: { beginAtZero: true, grid: { color: "#e5e7eb" } } },
+      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 12 } } },
+    },
+  });
+}
+
+function renderHomeCpl() {
+  if (homeCharts.cpl) homeCharts.cpl.destroy();
+  const rows = last30(HOME.cpl || []);
+  if (!rows.length) return;
+  homeCharts.cpl = new Chart($("home-cpl"), {
+    type: "line",
+    data: {
+      labels: rows.map(r => r.date),
+      datasets: [{
+        label: "CPL", data: rows.map(r => r.value), _spend: rows.map(r => r.spend),
+        _leads: rows.map(r => r.leads),
+        borderColor: PALETTE[1], backgroundColor: PALETTE[1],
+        borderWidth: 2, pointRadius: 0, tension: .25, spanGaps: true,
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
+                y: { beginAtZero: true, grid: { color: "#e5e7eb" },
+                     ticks: { callback: v => fmtEUR.format(v) } } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => {
+          const i = ctx.dataIndex, d = ctx.dataset;
+          return ctx.parsed.y == null
+            ? " nessun lead quel giorno"
+            : ` CPL ${fmtEUR.format(ctx.parsed.y)} — ${fmtEUR.format(d._spend[i])} / ${fmt(d._leads[i])} lead`;
+        } } },
+      },
+    },
+  });
+}
+
+function renderHomeCampaigns() {
+  if (homeCharts.campaigns) homeCharts.campaigns.destroy();
+  $("home-camp-metric").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("btn-active", b.dataset.m === homeCampMetric);
+    b.onclick = () => { homeCampMetric = b.dataset.m; renderHomeCampaigns(); };
+  });
+
+  const since = daysAgo(30);
+  const camps = (HOME.campaigns || [])
+    .map(c => ({ ...c, series: c.series.filter(p => p.date >= since) }))
+    .filter(c => c.series.some(p => p[homeCampMetric] > 0))
+    .slice(0, 6);
+  if (!camps.length) return;
+
+  const dates = [...new Set(camps.flatMap(c => c.series.map(p => p.date)))].sort();
+  homeCharts.campaigns = new Chart($("home-campaigns"), {
+    type: "bar",
+    data: {
+      labels: dates,
+      datasets: camps.map((c, i) => {
+        const by = Object.fromEntries(c.series.map(p => [p.date, p[homeCampMetric]]));
+        return { label: c.name.length > 34 ? c.name.slice(0, 34) + "…" : c.name,
+                 data: dates.map(d => by[d] || 0),
+                 backgroundColor: PALETTE[i % PALETTE.length], borderRadius: 2 };
+      }),
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 10 } },
+        y: { stacked: true, beginAtZero: true, grid: { color: "#e5e7eb" },
+             ticks: { callback: v => homeCampMetric === "spend" ? fmtEUR.format(v) : fmt(v) } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 8, font: { size: 10 } } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ` +
+          (homeCampMetric === "spend" ? fmtEUR.format(ctx.parsed.y) : fmt(ctx.parsed.y)) } },
+      },
+    },
+  });
+}
+
+function renderHomeCalendar() {
+  const cal = HOME.calendar || { upcoming: [], in_progress: [], late: [], total: 0 };
+  $("home-cal-link").href = CMP_CFG.calendario_url;
+
+  const col = (title, items, tone, empty) => `
+    <div>
+      <div class="text-xs font-semibold opacity-70 mb-2">
+        ${title} <span class="badge badge-xs ${tone}">${items.length}</span>
+      </div>
+      <div class="flex flex-col gap-1">
+        ${items.length ? items.slice(0, 6).map(p => `
+          <div class="border border-base-300 rounded p-2">
+            <div class="text-xs font-medium leading-snug">${p.title}</div>
+            <div class="text-[10px] opacity-60 mt-0.5">
+              ${p.date} · ${p.channel} · ${p.format}${p.owner ? " · " + p.owner : ""}
+            </div>
+            ${p.tags.length ? `<div class="mt-1 flex flex-wrap gap-1">${p.tags.slice(0,3).map(t =>
+              `<span class="badge badge-xs" style="background:${t.color || "#94a3b8"};color:#fff;border:none">${t.name}</span>`).join("")}</div>` : ""}
+          </div>`).join("")
+          : `<div class="text-xs opacity-40 py-3">${empty}</div>`}
+      </div>
+    </div>`;
+
+  $("home-calendar").innerHTML =
+    col("In ritardo", cal.late, "badge-error", "niente in ritardo") +
+    col("In lavorazione", cal.in_progress, "badge-warning", "niente in produzione") +
+    col("Da iniziare (14 giorni)", cal.upcoming, "badge-info", "niente in programma");
+}
+
+function renderHome() {
+  if (!HOME) return;
+  renderHomeAnalytics();
+  renderHomeCpl();
+  renderHomeCampaigns();
+  renderHomeCalendar();
+}
+
+async function loadHome() {
+  try {
+    const r = await fetch(CMP_CFG.home_url, { cache: "no-store" });
+    if (!r.ok) return;
+    HOME = await r.json();
+    renderHome();
+  } catch {}
+}
+
+// ---------------------------------------------------------------- presets
+// The whole page state travels as one object, so adding a control later only
+// means adding a key here - old presets keep loading, they just fall back to
+// the default for anything they don't mention.
+
+const PRESETS_URL = "/data/compare-presets.json";
+const LAST_COOKIE = "compare_last";
+let PRESETS = [];
+
+function currentConfig() {
+  return { selected: [...selected], period, groupBy, mode, events: $("chk-events").checked };
+}
+
+function applyConfig(cfg) {
+  if (!cfg) return;
+  if (Array.isArray(cfg.selected)) {
+    // Drop metrics that no longer exist rather than blowing up on them.
+    const valid = cfg.selected.filter(k => METRIC_KEYS.includes(k));
+    if (valid.length) selected = new Set(valid);
+  }
+  if (cfg.period !== undefined) period = cfg.period;
+  if (cfg.groupBy) groupBy = cfg.groupBy;
+  if (cfg.mode) mode = cfg.mode;
+  if (cfg.events !== undefined) $("chk-events").checked = !!cfg.events;
+}
+
+function setCookie(name, value, days) {
+  const d = new Date(Date.now() + days * 864e5).toUTCString();
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${d}; path=/; SameSite=Lax`;
+}
+function getCookie(name) {
+  const m = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+function rememberCurrent() {
+  try { setCookie(LAST_COOKIE, JSON.stringify(currentConfig()), 180); } catch {}
+}
+
+function csrf() {
+  const m = document.cookie.match(/csrftoken=([^;]+)/);
+  return m ? m[1] : "";
+}
+
+function renderPresetSelect(selectedName) {
+  $("f-preset").innerHTML = `<option value="">— vista corrente —</option>` +
+    PRESETS.map(p => `<option value="${p.name.replace(/"/g, "&quot;")}" ${p.name === selectedName ? "selected" : ""}>${p.name}</option>`).join("");
+  $("btn-preset-del").classList.toggle("hidden", !$("f-preset").value);
+}
+
+async function loadPresets() {
+  try {
+    const r = await fetch(PRESETS_URL, { cache: "no-store" });
+    PRESETS = (await r.json()).presets || [];
+  } catch { PRESETS = []; }
+  renderPresetSelect($("f-preset").value);
+}
+
+$("f-preset").addEventListener("change", () => {
+  const p = PRESETS.find(x => x.name === $("f-preset").value);
+  $("btn-preset-del").classList.toggle("hidden", !$("f-preset").value);
+  if (!p) return;
+  applyConfig(p.config);
+  renderPicker();
+  renderAll();
+  rememberCurrent();
+});
+
+$("btn-preset-save").onclick = async () => {
+  const suggested = $("f-preset").value || "";
+  const name = prompt("Nome della vista da salvare:", suggested);
+  if (!name || !name.trim()) return;
+  const r = await fetch(PRESETS_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRFToken": csrf() },
+    body: JSON.stringify({ name: name.trim(), config: currentConfig() }),
+  });
+  if (!r.ok) { alert("Salvataggio non riuscito"); return; }
+  await loadPresets();
+  renderPresetSelect(name.trim());
+};
+
+$("btn-preset-del").onclick = async () => {
+  const name = $("f-preset").value;
+  if (!name || !confirm(`Eliminare la vista "${name}"?`)) return;
+  await fetch(`${PRESETS_URL}?name=${encodeURIComponent(name)}`, {
+    method: "DELETE", headers: { "X-CSRFToken": csrf() },
+  });
+  await loadPresets();
+  renderPresetSelect("");
+};
 
 async function load() {
   try {
@@ -279,8 +584,14 @@ async function load() {
     if (!hasAny) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
     $("empty-state").classList.add("hidden");
     $("content").classList.remove("hidden");
+
+    // Restore whatever was on screen last time before the first render.
+    try { applyConfig(JSON.parse(getCookie(LAST_COOKIE) || "null")); } catch {}
+    await loadPresets();
+
     renderPicker();
     renderAll();
+    loadHome();
   } catch {
     $("empty-state").classList.remove("hidden");
     $("content").classList.add("hidden");

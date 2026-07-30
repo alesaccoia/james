@@ -407,6 +407,26 @@ class ContentPiece(models.Model):
         return self.published_date or self.planned_date
 
 
+class ComparePreset(models.Model):
+    """A saved configuration of the Confronto page — which metrics are on the
+    chart, the period, the grouping, absolute vs normalised, events on or off.
+
+    The whole state is kept as one JSON blob rather than a column per option
+    on purpose: the compare page grows new controls regularly, and a preset
+    saved today should keep working when it does (unknown keys are simply
+    ignored on load, missing ones fall back to the page default).
+    """
+    name = models.CharField(max_length=120, unique=True)
+    config = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class TaggedEntity(models.Model):
     """Tagging + funnel-stage assignment for one real Meta advertising object,
     keyed by its Meta id. Deliberately an *overlay*: names, hierarchy and
