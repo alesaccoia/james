@@ -131,7 +131,7 @@
       <div class="sm:col-span-2 flex justify-between items-center mt-2">
         <button type="button" class="btn btn-sm btn-error btn-outline hidden" id="btn-delete">Elimina</button>
         <div class="flex gap-2 ml-auto">
-          <button type="button" class="btn btn-sm" onclick="piece_modal.close()">Annulla</button>
+          <button type="button" class="btn btn-sm" onclick="document.getElementById('piece-modal').close()">Annulla</button>
           <button type="submit" class="btn btn-sm btn-primary">Salva</button>
         </div>
       </div>
@@ -342,7 +342,7 @@ function openForm(pieceId, prefill) {
       f.submit();
     };
   }
-  piece_modal.showModal();
+  document.getElementById('piece-modal').showModal();
 }
 
 function renderAll() {
