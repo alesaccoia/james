@@ -60,12 +60,21 @@ NATURAL_KEYS = {
 
 # Streams whose natural key stays the same forever but whose *data* keeps
 # changing after the row is first seen - Meta insights are lifetime running
-# totals (reach, likes...) that grow for weeks after a post goes up, and page
-# profile fields (fan_count...) drift too. For these, re-syncing overwrites
-# the stored data instead of being skipped as a duplicate, so numbers stay
-# current. Everything else (e.g. fb_ads_insights, keyed by ad_id+date) is a
-# closed daily bucket once the day is over, so insert-once-skip-after stays
-# the default and is cheaper.
+# totals (reach, likes...) that grow for weeks after a post goes up, page
+# profile fields (fan_count...) drift too, and fb_ads_insights rows for the
+# last 1-2 days are NOT a closed bucket yet - Meta keeps attributing spend
+# and conversions to "today"/"yesterday" for up to ~72h, so a row synced
+# early in the day (or the day after) undercounts until it's resynced later.
+# Confirmed live (30/07/2026): today's fb_ads_insights leads were frozen at
+# 2 in James while the real, freshly-synced number was much higher - the
+# first sync of the day had captured it before most of the day's spend/leads
+# had posted, and every later sync that day was silently skipped as a
+# duplicate. For these streams, re-syncing overwrites the stored data instead
+# of being skipped, so numbers stay current. Everything else (GA4 reports,
+# entity lists like fb_campaigns...) stays insert-once-skip-after, which is
+# cheaper and correct once a period is genuinely closed - though GA4's most
+# recent day or two likely has the same kind of lag; not fixed here since it
+# wasn't reported broken, flagged as a probable follow-up.
 REFRESHABLE_STREAMS = {
     'mentor_meta_pages_page',
     'mentor_meta_pages_post',
@@ -73,6 +82,7 @@ REFRESHABLE_STREAMS = {
     'mentor_meta_pages_page_insights',
     'mentor_ig_page_ig_media',
     'mentor_ig_page_ig_media_insights',
+    'fb_ads_insights',
 }
 
 META_COLS = {'_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_meta', '_airbyte_generation_id'}
