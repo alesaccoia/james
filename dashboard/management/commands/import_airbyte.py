@@ -70,11 +70,15 @@ NATURAL_KEYS = {
 # first sync of the day had captured it before most of the day's spend/leads
 # had posted, and every later sync that day was silently skipped as a
 # duplicate. For these streams, re-syncing overwrites the stored data instead
-# of being skipped, so numbers stay current. Everything else (GA4 reports,
-# entity lists like fb_campaigns...) stays insert-once-skip-after, which is
-# cheaper and correct once a period is genuinely closed - though GA4's most
-# recent day or two likely has the same kind of lag; not fixed here since it
-# wasn't reported broken, flagged as a probable follow-up.
+# of being skipped, so numbers stay current. Everything else (entity lists
+# like fb_campaigns, fb_ad_sets...) stays insert-once-skip-after, which is
+# cheaper and correct once a period is genuinely closed.
+#
+# GA4 has the same problem, confirmed live (30/07/2026): its reporting API
+# doesn't finalize a day's numbers immediately either - today showed 9
+# sessions in James vs. 88 freshly synced, and even 2 days back was still
+# stale (7 vs. 70). All GA4 report streams are keyed by date (+ a dimension),
+# so they get the same treatment.
 REFRESHABLE_STREAMS = {
     'mentor_meta_pages_page',
     'mentor_meta_pages_post',
@@ -83,6 +87,16 @@ REFRESHABLE_STREAMS = {
     'mentor_ig_page_ig_media',
     'mentor_ig_page_ig_media_insights',
     'fb_ads_insights',
+    'ga_website_overview',
+    'ga_conversions_report',
+    'ga_pages_path_report',
+    'ga_traffic_acquisition_session_campaign_report',
+    'ga_traffic_acquisition_session_default_channel_grouping_report',
+    'ga_user_acquisition_first_user_source_medium_report',
+    'ga_demographic_age_report',
+    'ga_demographic_gender_report',
+    'ga_demographic_country_report',
+    'ga_demographic_city_report',
 }
 
 META_COLS = {'_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_meta', '_airbyte_generation_id'}
