@@ -132,6 +132,10 @@ class FunnelStageSource(models.Model):
         max_length=100, blank=True, db_index=True,
         help_text='ID Meta reale (campaign_id / adset_id / ad_id) per collegare le statistiche esatte. '
                   'Vuoto per voci non Meta (es. "Altro").')
+    # Same taxonomy used for budget and content: tagging the real Meta objects
+    # is what lets actual spend be sliced by audience / message type / pillar,
+    # instead of only by campaign name.
+    tags = models.ManyToManyField('Tag', blank=True, related_name='sources')
     notes = models.CharField(max_length=300, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -140,6 +144,225 @@ class FunnelStageSource(models.Model):
 
     def __str__(self):
         return f'{self.stage.name} · {self.get_kind_display()}: {self.name}'
+
+
+# --------------------------------------------------------------- tagging
+# A generic dimension + tag taxonomy. Deliberately not hardcoded to
+# "audience" / "message type" / etc: the strategy deck's own cuts (genitori vs
+# studenti, Think-Feel-Do, pilastro creativo, ordine scolastico, bisogno) are
+# just seeded rows, and new axes can be added without a migration. Everything
+# plannable and everything publishable hangs off these two models, which is
+# what makes "budget per tag" and "resa per tag" possible at all.
+
+
+class TagDimension(models.Model):
+    """One axis of classification — e.g. "Audience", "Think-Feel-Do",
+    "Pilastro creativo". Owns an ordered set of Tags."""
+    name = models.CharField(max_length=100)
+    slug = models.SlugField(unique=True)
+    description = models.TextField(blank=True)
+    order = models.PositiveIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+    allow_multiple = models.BooleanField(
+        default=False,
+        help_text='Se attivo, una campagna/contenuto può portare più tag di questa dimensione '
+                  '(es. "Bisogno"). Altrimenti se ne aspetta uno solo (es. "Audience").')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        return self.name
+
+
+class Tag(models.Model):
+    """One value within a TagDimension. `target_share` is the *intended*
+    weight within its dimension (genitori 70 / studenti 30, the creative mix
+    percentages...) — the plan against which real budget and real output get
+    compared. Left null when the dimension has no intended split."""
+    dimension = models.ForeignKey(TagDimension, on_delete=models.CASCADE, related_name='tags')
+    name = models.CharField(max_length=100)
+    slug = models.SlugField()
+    description = models.TextField(blank=True)
+    color = models.CharField(max_length=7, blank=True, help_text='Colore hex, es. #f96a34.')
+    target_share = models.FloatField(
+        null=True, blank=True,
+        help_text='Quota % attesa dentro la sua dimensione. Vuoto se non c\'è uno split previsto.')
+    order = models.PositiveIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['dimension__order', 'order', 'id']
+        unique_together = [('dimension', 'slug')]
+
+    def __str__(self):
+        return f'{self.dimension.name}: {self.name}'
+
+
+# --------------------------------------------------------- budget planning
+
+
+class BudgetPlan(models.Model):
+    """A budget period to plan against — typically a month. `total_budget` is
+    media spend only; operational effort (CRM, referral) is tracked as lines
+    with no amount, matching how the deck separates the two."""
+    name = models.CharField(max_length=150)
+    period_start = models.DateField()
+    period_end = models.DateField()
+    total_budget = models.FloatField(default=0, help_text='Budget media totale del periodo, in euro.')
+    notes = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-period_start']
+
+    def __str__(self):
+        return self.name
+
+
+class BudgetLine(models.Model):
+    """One planned slice of a BudgetPlan: a funnel stage and/or a combination
+    of tags, with either a percentage of the plan or an absolute amount.
+
+    Optionally points at a FunnelStageSource (a real Meta campaign/ad set),
+    which is what lets planned spend be compared against actual spend pulled
+    from fb_ads_insights. A line with no source is still useful as intent —
+    it just can't be reconciled automatically.
+    """
+    plan = models.ForeignKey(BudgetPlan, on_delete=models.CASCADE, related_name='lines')
+    label = models.CharField(max_length=200)
+    stage = models.ForeignKey(FunnelStage, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name='budget_lines')
+    tags = models.ManyToManyField(Tag, blank=True, related_name='budget_lines')
+    source = models.ForeignKey(FunnelStageSource, on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='budget_lines',
+                               help_text='Campagna/ad set Meta reale, per confrontare pianificato e speso.')
+    percent = models.FloatField(null=True, blank=True, help_text='% del budget totale del piano.')
+    amount = models.FloatField(null=True, blank=True, help_text='Importo fisso in euro (alternativo alla %).')
+    is_media = models.BooleanField(
+        default=True,
+        help_text='Disattiva per voci che sono effort operativo e non budget media (es. CRM), '
+                  'così non entrano nella somma del 100%.')
+    order = models.PositiveIntegerField(default=1)
+    notes = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        return f'{self.plan.name} · {self.label}'
+
+    @property
+    def resolved_amount(self):
+        """Euro value of this line: explicit amount wins, else percent of the
+        plan total. None when neither is set (pure-intent line)."""
+        if self.amount is not None:
+            return self.amount
+        if self.percent is not None:
+            return self.plan.total_budget * self.percent / 100.0
+        return None
+
+    @property
+    def resolved_percent(self):
+        if self.percent is not None:
+            return self.percent
+        if self.amount is not None and self.plan.total_budget:
+            return self.amount / self.plan.total_budget * 100.0
+        return None
+
+
+# ------------------------------------------------------- editorial calendar
+
+
+class ChannelCadence(models.Model):
+    """Expected publishing rhythm per channel, from the deck's editorial plan.
+    Drives the "are we actually publishing enough" check on the calendar —
+    the frequency commitment the social team and designer are held to."""
+    PERIOD_CHOICES = [('week', 'Settimana'), ('month', 'Mese')]
+
+    channel = models.CharField(max_length=40, unique=True)
+    label = models.CharField(max_length=100)
+    target_min = models.FloatField(help_text='Minimo di uscite attese nel periodo.')
+    target_max = models.FloatField(null=True, blank=True, help_text='Massimo, se è un intervallo.')
+    period = models.CharField(max_length=10, choices=PERIOD_CHOICES, default='week')
+    role = models.CharField(max_length=250, blank=True, help_text='Ruolo del canale nel funnel.')
+    order = models.PositiveIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        return self.label
+
+
+class ContentPiece(models.Model):
+    """One entry in the editorial calendar — planned, in production, or
+    published. Tagged along the same axes as budget, so the same taxonomy
+    answers both "where is the money going" and "what are we actually
+    publishing, and how did it do".
+
+    Once `external_permalink` (or `external_post_id`) is filled in, the piece
+    is matched against the real synced Facebook/Instagram post and its actual
+    reach/engagement flow back in — which is what turns the calendar from a
+    plan into a measurement instrument.
+    """
+    STATUS_CHOICES = [
+        ('idea', 'Idea'),
+        ('brief', 'Brief'),
+        ('produzione', 'In produzione'),
+        ('pronto', 'Pronto'),
+        ('pubblicato', 'Pubblicato'),
+        ('archiviato', 'Archiviato'),
+    ]
+    FORMAT_CHOICES = [
+        ('reel', 'Reel'),
+        ('post', 'Post'),
+        ('carosello', 'Carosello'),
+        ('story', 'Story'),
+        ('video', 'Video'),
+        ('statico', 'Statico'),
+        ('email', 'Email'),
+        ('altro', 'Altro'),
+    ]
+
+    title = models.CharField(max_length=250)
+    channel = models.CharField(max_length=40, help_text='Deve combaciare con ChannelCadence.channel.')
+    content_format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default='post')
+    stage = models.ForeignKey(FunnelStage, on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name='content_pieces')
+    tags = models.ManyToManyField(Tag, blank=True, related_name='content_pieces')
+    campaign_source = models.ForeignKey(
+        FunnelStageSource, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='content_pieces',
+        help_text='Campagna/ad set Meta a cui questa creatività è associata, se è un contenuto paid.')
+    planned_date = models.DateField(db_index=True)
+    published_date = models.DateField(null=True, blank=True, db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='idea', db_index=True)
+    owner = models.CharField(max_length=120, blank=True, help_text='Chi lo produce (social, designer, tutor...).')
+    brief = models.TextField(blank=True)
+    hook = models.CharField(
+        max_length=300, blank=True,
+        help_text='Come il brand è riconoscibile nei primi 2 secondi (regola creativa della strategia).')
+    external_permalink = models.URLField(blank=True, help_text='Link al post pubblicato, per agganciare le metriche reali.')
+    external_post_id = models.CharField(max_length=100, blank=True, db_index=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-planned_date', '-id']
+
+    def __str__(self):
+        return f'{self.planned_date} — {self.title}'
+
+    @property
+    def effective_date(self):
+        return self.published_date or self.planned_date
 
 
 class MarketingEvent(models.Model):

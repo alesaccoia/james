@@ -1,0 +1,335 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Pianificazione{% endblock %}
+{% block nav_group_strategia %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Pianificazione e tag</h1>
+    <p class="text-sm opacity-60">Budget per fase e per tag, confronto fra previsto e speso</p>
+  </div>
+  <div class="grow"></div>
+  <select id="f-plan" class="select select-bordered select-sm"></select>
+  <a href="/admin/dashboard/budgetplan/" class="btn btn-sm btn-outline" target="_blank" rel="noopener">Modifica piano</a>
+  <button class="btn btn-sm" id="btn-reload">Ricarica</button>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Tassonomia non ancora creata. Lancia <code>manage.py seed_marketing_plan</code> per partire dalle dimensioni e dalle quote della strategia del 24 luglio.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="kpis"></div>
+
+  <div id="attribution-warning" class="hidden alert alert-warning mb-6 text-sm"></div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Budget per fase del funnel</h2>
+      <p class="text-sm opacity-60">Previsto dal piano contro speso reale su Meta nel periodo. Lo speso arriva dalle campagne collegate a ciascuna fase.</p>
+      <div class="h-72 relative"><canvas id="chart-stages"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Voci di piano</h2>
+      <p class="text-sm opacity-60">Ogni voce è una fetta di budget: fase del funnel più combinazione di tag. Lo speso appare solo per le voci collegate a una campagna Meta reale.</p>
+      <div class="overflow-x-auto">
+        <table class="table table-zebra table-sm" id="lines-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="divider mt-8">Allocazione per tag</div>
+  <p class="text-sm opacity-60 -mt-4 mb-4">
+    Per ogni dimensione: quota <strong>prevista</strong> (quella che hai dichiarato sul tag) contro quota
+    <strong>effettiva</strong> della spesa, ricavata dalle campagne Meta che portano quel tag.
+    Una dimensione senza quote previste mostra solo l'effettivo.
+  </p>
+
+  <div id="dimensions" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6"></div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Aggiungi un tag</h2>
+      <p class="text-sm opacity-60">La tassonomia è tua: aggiungi assi e valori mano a mano che la strategia si articola. Le dimensioni si gestiscono <a href="/admin/dashboard/tagdimension/" class="link" target="_blank" rel="noopener">dall'admin</a>.</p>
+      <form method="post" action="{% url 'dashboard:tag_save' %}" class="flex flex-wrap items-end gap-3 mt-2">
+        {% csrf_token %}
+        <label class="form-control">
+          <span class="label-text text-xs">Dimensione</span>
+          <select name="dimension" id="new-tag-dimension" class="select select-bordered select-sm" required></select>
+        </label>
+        <label class="form-control">
+          <span class="label-text text-xs">Nome</span>
+          <input type="text" name="name" class="input input-bordered input-sm" placeholder="es. Genitori DSA" required>
+        </label>
+        <label class="form-control">
+          <span class="label-text text-xs">Quota prevista %</span>
+          <input type="number" name="target_share" step="0.1" min="0" max="100" class="input input-bordered input-sm w-32" placeholder="opzionale">
+        </label>
+        <label class="form-control">
+          <span class="label-text text-xs">Colore</span>
+          <input type="text" name="color" class="input input-bordered input-sm w-28" placeholder="#f96a34">
+        </label>
+        <label class="form-control grow">
+          <span class="label-text text-xs">Descrizione</span>
+          <input type="text" name="description" class="input input-bordered input-sm" placeholder="opzionale">
+        </label>
+        <button class="btn btn-sm btn-primary" type="submit">Aggiungi</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">KPI e obiettivi per fase</h2>
+      <p class="text-sm opacity-60">Target assegnati ai KPI di ciascuna fase. I valori si inseriscono <a href="/admin/dashboard/funnelkpi/" class="link" target="_blank" rel="noopener">dall'admin</a>; l'andamento si vede nella pagina <a href="{% url 'dashboard:funnel' %}" class="link">Funnel</a>.</p>
+      <div class="overflow-x-auto">
+        <table class="table table-zebra table-sm" id="kpi-table"></table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>const PLAN_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = PLAN_CFG.data_url;
+const PALETTE = ["#0d2a8c", "#f96a34", "#ffc83d", "#34d399", "#a78bfa", "#f472b6", "#8a7500", "#94a3b8"];
+const C_PLANNED = "#0d2a8c";
+const C_ACTUAL = "#f96a34";
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 0 });
+const fmtEUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+const eur = (v) => v == null ? "—" : fmtEUR.format(v);
+const pct = (v) => v == null ? "—" : fmtN.format(v) + "%";
+const pct1 = (v) => v == null ? "—" : new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 }).format(v) + "%";
+
+let DATA = null;
+let planId = null;
+let charts = { stages: null, dims: {} };
+
+function colorOf(tag, i) {
+  return tag.color || PALETTE[i % PALETTE.length];
+}
+
+function renderPlanSelect() {
+  $("f-plan").innerHTML = DATA.plans.map(p =>
+    `<option value="${p.id}" ${DATA.plan && p.id === DATA.plan.id ? "selected" : ""}>${p.name}${p.is_active ? "" : " (non attivo)"}</option>`
+  ).join("") || `<option value="">nessun piano</option>`;
+}
+
+function renderKPIs() {
+  const plan = DATA.plan;
+  const mediaLines = DATA.lines.filter(l => l.is_media);
+  const plannedPct = mediaLines.reduce((s, l) => s + (l.percent || 0), 0);
+  const plannedAmt = mediaLines.reduce((s, l) => s + (l.amount || 0), 0);
+  const actual = DATA.stages.reduce((s, st) => s + (st.actual_spend || 0), 0);
+
+  const defs = [
+    { name: "Budget del periodo", val: plan ? eur(plan.total_budget) : "—" },
+    { name: "Periodo", val: plan ? `${plan.period_start} → ${plan.period_end}` : "—", small: true },
+    { name: "Allocato (media)", val: pct(plannedPct), hint: Math.abs(plannedPct - 100) > 0.5 ? "La somma delle voci media non fa 100%" : "" },
+    { name: "Previsto in euro", val: eur(plannedAmt) },
+    { name: "Speso reale su Meta", val: eur(actual) },
+  ];
+  $("kpis").innerHTML = defs.map(d => `
+    <div class="stat" ${d.hint ? `title="${d.hint}"` : ""}>
+      <div class="stat-title">${d.name}${d.hint ? ' <span class="text-warning">⚠</span>' : ""}</div>
+      <div class="stat-value ${d.small ? "text-base" : "text-2xl"}">${d.val}</div>
+    </div>`).join("");
+}
+
+function renderAttributionWarning() {
+  const el = $("attribution-warning");
+  const untagged = DATA.untagged_spend || 0;
+  const tagged = DATA.tagged_spend_total || 0;
+  if (untagged <= 0) { el.classList.add("hidden"); return; }
+  const total = untagged + tagged;
+  const share = total ? (untagged / total * 100) : 0;
+  el.classList.remove("hidden");
+  el.innerHTML = `<span><strong>${eur(untagged)}</strong> di spesa reale (${pct1(share)} del totale)
+    passa da campagne senza nessun tag, quindi non entra nelle quote effettive qui sotto.
+    Per farla rientrare, assegna i tag alle campagne
+    <a href="/admin/dashboard/funnelstagesource/" class="link" target="_blank" rel="noopener">da qui</a>.</span>`;
+}
+
+function renderStagesChart() {
+  if (charts.stages) charts.stages.destroy();
+  const stages = DATA.stages;
+  if (!stages.length) return;
+  charts.stages = new Chart($("chart-stages"), {
+    type: "bar",
+    data: {
+      labels: stages.map(s => s.name),
+      datasets: [
+        { label: "Previsto", data: stages.map(s => s.planned_amount || 0), backgroundColor: C_PLANNED, borderRadius: 2 },
+        { label: "Speso reale", data: stages.map(s => s.actual_spend || 0), backgroundColor: C_ACTUAL, borderRadius: 2 },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { display: false } },
+        y: { beginAtZero: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => fmtEUR.format(v) } },
+      },
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${eur(ctx.parsed.y)}` } },
+      },
+    },
+  });
+}
+
+function renderLinesTable() {
+  const rows = DATA.lines;
+  const body = rows.map(l => {
+    const delta = (l.actual_spend != null && l.amount != null) ? l.actual_spend - l.amount : null;
+    const tagBadges = l.tags.map(t =>
+      `<span class="badge badge-sm" style="background:${t.color || "#94a3b8"};color:#fff;border:none" title="${t.dimension}">${t.name}</span>`
+    ).join(" ") || '<span class="opacity-40">—</span>';
+    return `<tr>
+      <td>${l.label}${l.is_media ? "" : ' <span class="badge badge-ghost badge-xs">effort</span>'}</td>
+      <td>${l.stage || '<span class="opacity-40">—</span>'}</td>
+      <td class="whitespace-nowrap">${tagBadges}</td>
+      <td class="text-right">${pct(l.percent)}</td>
+      <td class="text-right">${eur(l.amount)}</td>
+      <td class="text-right">${l.source ? eur(l.actual_spend) : '<span class="opacity-40" title="Nessuna campagna Meta collegata a questa voce">n.c.</span>'}</td>
+      <td class="text-right ${delta == null ? "" : (delta > 0 ? "text-error" : "text-success")}">${delta == null ? "—" : (delta > 0 ? "+" : "") + eur(delta)}</td>
+      <td class="text-xs opacity-60 max-w-xs truncate" title="${(l.notes || "").replace(/"/g, "&quot;")}">${l.notes || ""}</td>
+    </tr>`;
+  }).join("");
+  $("lines-table").innerHTML =
+    `<thead><tr><th>voce</th><th>fase</th><th>tag</th><th class="text-right">%</th><th class="text-right">previsto</th><th class="text-right">speso</th><th class="text-right">delta</th><th>note</th></tr></thead>
+     <tbody>${body || '<tr><td colspan="8" class="opacity-50">nessuna voce in questo piano</td></tr>'}</tbody>`;
+}
+
+function renderDimensions() {
+  Object.values(charts.dims).forEach(c => c && c.destroy());
+  charts.dims = {};
+
+  const taggedTotal = DATA.tagged_spend_total || 0;
+  $("dimensions").innerHTML = DATA.dimensions.map(dim => `
+    <div class="card bg-base-100 shadow">
+      <div class="card-body">
+        <h2 class="card-title text-base">${dim.name}</h2>
+        <p class="text-xs opacity-60">${dim.description || ""}</p>
+        <div class="h-64 relative"><canvas id="chart-dim-${dim.slug}"></canvas></div>
+        <table class="table table-xs mt-2" id="table-dim-${dim.slug}"></table>
+      </div>
+    </div>`).join("");
+
+  DATA.dimensions.forEach(dim => {
+    const tags = dim.tags;
+    if (!tags.length) return;
+    const actualAbs = tags.map(t => DATA.spend_by_tag[String(t.id)] || 0);
+    // Effective share is computed against spend that carries *any* tag, so it
+    // is comparable with the planned shares (which also sum to 100 within the
+    // dimension). Untagged spend is called out separately above.
+    const actualShare = tags.map((t, i) => taggedTotal ? (actualAbs[i] / taggedTotal * 100) : 0);
+    const hasPlanned = tags.some(t => t.target_share != null);
+
+    const datasets = [];
+    if (hasPlanned) {
+      datasets.push({
+        label: "Quota prevista", data: tags.map(t => t.target_share ?? null),
+        backgroundColor: C_PLANNED, borderRadius: 2,
+      });
+    }
+    datasets.push({
+      label: "Quota effettiva (spesa)", data: actualShare, _abs: actualAbs,
+      backgroundColor: C_ACTUAL, borderRadius: 2,
+    });
+
+    charts.dims[dim.slug] = new Chart($(`chart-dim-${dim.slug}`), {
+      type: "bar",
+      data: { labels: tags.map(t => t.name), datasets },
+      options: {
+        indexAxis: "y",
+        maintainAspectRatio: false,
+        scales: {
+          x: { beginAtZero: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => v + "%" } },
+          y: { grid: { display: false }, ticks: { font: { size: 10 } } },
+        },
+        plugins: {
+          legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 10, font: { size: 10 } } },
+          tooltip: { callbacks: { label: ctx => {
+            const abs = ctx.dataset._abs ? ` (${eur(ctx.dataset._abs[ctx.dataIndex])})` : "";
+            return ` ${ctx.dataset.label}: ${pct1(ctx.parsed.x)}${abs}`;
+          } } },
+        },
+      },
+    });
+
+    const body = tags.map((t, i) => {
+      const planned = t.target_share;
+      const delta = planned == null ? null : actualShare[i] - planned;
+      return `<tr>
+        <td><span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${colorOf(t, i)}"></span>${t.name}</td>
+        <td class="text-right">${pct(planned)}</td>
+        <td class="text-right">${pct1(actualShare[i])}</td>
+        <td class="text-right">${eur(actualAbs[i])}</td>
+        <td class="text-right ${delta == null ? "" : (Math.abs(delta) < 5 ? "opacity-50" : (delta > 0 ? "text-warning" : "text-info"))}">${delta == null ? "—" : (delta > 0 ? "+" : "") + pct1(delta)}</td>
+      </tr>`;
+    }).join("");
+    $(`table-dim-${dim.slug}`).innerHTML =
+      `<thead><tr><th>tag</th><th class="text-right">prev.</th><th class="text-right">eff.</th><th class="text-right">spesa</th><th class="text-right">delta</th></tr></thead><tbody>${body}</tbody>`;
+  });
+
+  $("new-tag-dimension").innerHTML = DATA.dimensions.map(d =>
+    `<option value="${d.id}">${d.name}</option>`).join("");
+}
+
+function renderKPITable() {
+  const body = DATA.stages.flatMap(s =>
+    s.kpis.map(k => `<tr>
+      <td>${s.name}</td>
+      <td>${k.name}</td>
+      <td>${k.unit}</td>
+      <td class="text-right">${k.target_value == null ? '<span class="opacity-40">nessun target</span>' : fmt(k.target_value)}</td>
+    </tr>`)).join("");
+  $("kpi-table").innerHTML =
+    `<thead><tr><th>fase</th><th>KPI</th><th>unità</th><th class="text-right">target</th></tr></thead>
+     <tbody>${body || '<tr><td colspan="4" class="opacity-50">nessun KPI definito</td></tr>'}</tbody>`;
+}
+
+function renderAll() {
+  renderPlanSelect();
+  renderKPIs();
+  renderAttributionWarning();
+  renderStagesChart();
+  renderLinesTable();
+  renderDimensions();
+  renderKPITable();
+}
+
+$("btn-reload").onclick = () => load();
+$("f-plan").addEventListener("change", (e) => { planId = e.target.value; load(); });
+
+async function load() {
+  try {
+    const url = planId ? `${DATA_URL}?plan=${encodeURIComponent(planId)}` : DATA_URL;
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    DATA = await r.json();
+    if (!DATA.dimensions.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    renderAll();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}

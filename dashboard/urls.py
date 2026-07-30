@@ -29,4 +29,13 @@ urlpatterns = [
 
     path('funnel/', views.funnel, name='funnel'),
     path('funnel/data.json', views.data_funnel, name='data_funnel'),
+
+    path('pianificazione/', views.pianificazione, name='pianificazione'),
+    path('pianificazione/data.json', views.data_pianificazione, name='data_pianificazione'),
+    path('pianificazione/tag/nuovo/', views.tag_save, name='tag_save'),
+
+    path('calendario/', views.calendario, name='calendario'),
+    path('calendario/data.json', views.data_calendario, name='data_calendario'),
+    path('calendario/salva/', views.content_piece_save, name='content_piece_save'),
+    path('calendario/<int:pk>/elimina/', views.content_piece_delete, name='content_piece_delete'),
 ]

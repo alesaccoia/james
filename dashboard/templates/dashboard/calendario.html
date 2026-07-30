@@ -1,0 +1,380 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Calendario editoriale{% endblock %}
+{% block nav_group_strategia %}btn-active{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center gap-3 mb-6">
+  <div>
+    <h1 class="text-2xl font-bold">Calendario editoriale</h1>
+    <p class="text-sm opacity-60">Uscite pianificate, cadenza per canale, resa reale per tag</p>
+  </div>
+  <div class="grow"></div>
+  <button class="btn btn-sm btn-primary" onclick="openForm()">Nuova uscita</button>
+  <button class="btn btn-sm" id="btn-reload">Ricarica</button>
+</div>
+
+<div id="empty-state" class="hidden alert shadow-lg mb-6">
+  <span>Nessuna cadenza canale ancora definita. Lancia <code>manage.py seed_marketing_plan</code> per partire dai canali della strategia del 24 luglio.</span>
+</div>
+
+<div id="content" class="hidden">
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Cadenza per canale</h2>
+      <p class="text-sm opacity-60">Uscite pubblicate nelle ultime 4 settimane contro l'obiettivo di frequenza dichiarato in strategia.</p>
+      <div class="overflow-x-auto">
+        <table class="table table-zebra table-sm" id="cadence-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">Resa per tag</h2>
+      <p class="text-sm opacity-60">Engagement medio delle uscite pubblicate e collegate a un post reale, per tag. Solo Instagram ha il reach; vedi la pagina Facebook per il perché.</p>
+      <div class="flex flex-wrap items-center gap-3 mb-3">
+        <div class="join" id="dim-tabs"></div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="table table-zebra table-sm" id="tag-performance-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <div id="unlinked-card" class="card bg-base-100 shadow mb-6 hidden">
+    <div class="card-body">
+      <h2 class="card-title">Post pubblicati non ancora nel calendario</h2>
+      <p class="text-sm opacity-60">Uscite reali su Facebook/Instagram che non risultano collegate a nessuna voce qui sotto — un modo rapido per riconciliare quello che è stato davvero pubblicato.</p>
+      <div class="overflow-x-auto max-h-80">
+        <table class="table table-zebra table-sm" id="unlinked-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center gap-3 mb-3">
+        <h2 class="card-title">Uscite</h2>
+        <div class="grow"></div>
+        <div class="join" id="status-tabs"></div>
+        <select id="f-channel" class="select select-bordered select-sm"><option value="">tutti i canali</option></select>
+        <input type="text" id="f-text" placeholder="cerca…" class="input input-bordered input-sm w-48">
+      </div>
+      <div class="overflow-x-auto max-h-[560px]">
+        <table class="table table-zebra table-pin-rows table-sm" id="pieces-table"></table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Modal: create/edit content piece -->
+<dialog id="piece-modal" class="modal">
+  <div class="modal-box max-w-2xl">
+    <h3 class="font-bold text-lg mb-4" id="modal-title">Nuova uscita</h3>
+    <form method="post" action="{% url 'dashboard:content_piece_save' %}" id="piece-form" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {% csrf_token %}
+      <input type="hidden" name="piece_id" id="f-piece-id">
+      <label class="form-control sm:col-span-2">
+        <span class="label-text text-xs">Titolo</span>
+        <input type="text" name="title" id="f-title" class="input input-bordered input-sm" required>
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Canale</span>
+        <select name="channel" id="f-channel-form" class="select select-bordered select-sm" required></select>
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Formato</span>
+        <select name="content_format" id="f-format" class="select select-bordered select-sm"></select>
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Data pianificata</span>
+        <input type="date" name="planned_date" id="f-planned-date" class="input input-bordered input-sm" required>
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Data pubblicazione</span>
+        <input type="date" name="published_date" id="f-published-date" class="input input-bordered input-sm">
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Stato</span>
+        <select name="status" id="f-status" class="select select-bordered select-sm"></select>
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Fase funnel</span>
+        <select name="stage" id="f-stage" class="select select-bordered select-sm"><option value="">—</option></select>
+      </label>
+      <label class="form-control">
+        <span class="label-text text-xs">Responsabile</span>
+        <input type="text" name="owner" id="f-owner" class="input input-bordered input-sm" placeholder="social, designer, tutor…">
+      </label>
+      <label class="form-control sm:col-span-2">
+        <span class="label-text text-xs">Link al post pubblicato</span>
+        <input type="url" name="external_permalink" id="f-permalink" class="input input-bordered input-sm" placeholder="https://facebook.com/… o https://instagram.com/…">
+      </label>
+      <label class="form-control sm:col-span-2">
+        <span class="label-text text-xs">Tag</span>
+        <div id="f-tags" class="flex flex-wrap gap-x-4 gap-y-1 border border-base-300 rounded-lg p-2 max-h-40 overflow-y-auto"></div>
+      </label>
+      <label class="form-control sm:col-span-2">
+        <span class="label-text text-xs">Hook (come si riconosce il brand nei primi 2 secondi)</span>
+        <input type="text" name="hook" id="f-hook" class="input input-bordered input-sm">
+      </label>
+      <label class="form-control sm:col-span-2">
+        <span class="label-text text-xs">Brief</span>
+        <textarea name="brief" id="f-brief" class="textarea textarea-bordered textarea-sm" rows="2"></textarea>
+      </label>
+      <label class="form-control sm:col-span-2">
+        <span class="label-text text-xs">Note</span>
+        <textarea name="notes" id="f-notes" class="textarea textarea-bordered textarea-sm" rows="2"></textarea>
+      </label>
+      <div class="sm:col-span-2 flex justify-between items-center mt-2">
+        <button type="button" class="btn btn-sm btn-error btn-outline hidden" id="btn-delete">Elimina</button>
+        <div class="flex gap-2 ml-auto">
+          <button type="button" class="btn btn-sm" onclick="piece_modal.close()">Annulla</button>
+          <button type="submit" class="btn btn-sm btn-primary">Salva</button>
+        </div>
+      </div>
+    </form>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>chiudi</button></form>
+</dialog>
+
+<form method="post" id="delete-form" class="hidden"></form>
+
+<script>const CAL_CFG = {{ cfg_json|safe }};</script>
+{% verbatim %}
+<script>
+"use strict";
+
+const DATA_URL = CAL_CFG.data_url;
+const PLATFORM_COLOR = { Facebook: "#5b9dff", Instagram: "#f472b6" };
+const STATUS_COLOR = { idea: "badge-ghost", brief: "badge-info", produzione: "badge-warning",
+                        pronto: "badge-accent", pubblicato: "badge-success", archiviato: "badge-ghost" };
+
+const $ = (id) => document.getElementById(id);
+const fmtN = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
+const fmt = (v) => v == null ? "—" : fmtN.format(v);
+
+let DATA = null;
+let statusFilter = "";
+let dimFilter = null;
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function renderCadenceTable() {
+  const since = daysAgo(28);
+  const published = DATA.pieces.filter(p => p.status === "pubblicato" && p.date >= since);
+  const body = DATA.cadences.map(c => {
+    const count = published.filter(p => p.channel === c.channel).length;
+    const weeks = c.period === "week" ? 4 : (28 / 30);
+    const expectedMin = c.target_min * weeks;
+    const expectedMax = c.target_max != null ? c.target_max * weeks : null;
+    const ratio = expectedMin ? count / expectedMin : (count > 0 ? 1 : 0);
+    const status = ratio >= 1 ? '<span class="badge badge-success badge-sm">in linea</span>'
+      : ratio >= 0.6 ? '<span class="badge badge-warning badge-sm">sotto ritmo</span>'
+      : '<span class="badge badge-error badge-sm">indietro</span>';
+    const target = c.target_max != null ? `${c.target_min}–${c.target_max} / ${c.period === "week" ? "settimana" : "mese"}`
+      : `${c.target_min}+ / ${c.period === "week" ? "settimana" : "mese"}`;
+    return `<tr>
+      <td>${c.label}</td>
+      <td class="text-xs opacity-60">${c.role || ""}</td>
+      <td>${target}</td>
+      <td class="text-right">${count}</td>
+      <td class="text-right opacity-60">${fmt(expectedMin)}${expectedMax != null ? "–" + fmt(expectedMax) : "+"}</td>
+      <td>${status}</td>
+    </tr>`;
+  }).join("");
+  $("cadence-table").innerHTML =
+    `<thead><tr><th>canale</th><th>ruolo</th><th>obiettivo</th><th class="text-right">pubblicate (28gg)</th><th class="text-right">attese (28gg)</th><th>stato</th></tr></thead>
+     <tbody>${body || '<tr><td colspan="6" class="opacity-50">nessuna cadenza definita</td></tr>'}</tbody>`;
+}
+
+function renderDimTabs() {
+  const dims = DATA.dimensions.filter(d => d.tags.length);
+  if (dimFilter == null && dims.length) dimFilter = dims[0].slug;
+  $("dim-tabs").innerHTML = dims.map(d =>
+    `<button class="btn btn-xs join-item ${d.slug === dimFilter ? "btn-active" : ""}" data-d="${d.slug}">${d.name}</button>`).join("");
+  $("dim-tabs").querySelectorAll("button").forEach(b =>
+    b.onclick = () => { dimFilter = b.dataset.d; renderAll(); });
+}
+
+function renderTagPerformance() {
+  const dim = DATA.dimensions.find(d => d.slug === dimFilter);
+  if (!dim) { $("tag-performance-table").innerHTML = ""; return; }
+  const linked = DATA.pieces.filter(p => p.status === "pubblicato" && p.metrics);
+
+  const rows = dim.tags.map(t => {
+    const pieces = linked.filter(p => p.tag_ids.includes(t.id));
+    const withReach = pieces.filter(p => p.metrics.reach != null);
+    const avgReach = withReach.length ? withReach.reduce((s, p) => s + p.metrics.reach, 0) / withReach.length : null;
+    const avgEng = pieces.length ? pieces.reduce((s, p) => s + (p.metrics.engagement || 0), 0) / pieces.length : null;
+    return { tag: t, n: pieces.length, avgReach, avgEng };
+  }).sort((a, b) => (b.avgEng ?? -1) - (a.avgEng ?? -1));
+
+  const body = rows.map(r => `
+    <tr>
+      <td><span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${r.tag.color || "#94a3b8"}"></span>${r.tag.name}</td>
+      <td class="text-right">${r.n}</td>
+      <td class="text-right">${r.avgReach == null ? '<span class="opacity-40">n.d.</span>' : fmt(r.avgReach)}</td>
+      <td class="text-right">${r.avgEng == null ? '<span class="opacity-40">n.d.</span>' : fmt(r.avgEng)}</td>
+    </tr>`).join("");
+  $("tag-performance-table").innerHTML =
+    `<thead><tr><th>${dim.name}</th><th class="text-right">uscite pubblicate e collegate</th><th class="text-right">reach media</th><th class="text-right">engagement media</th></tr></thead>
+     <tbody>${body || '<tr><td colspan="4" class="opacity-50">nessuna uscita pubblicata e collegata con questo tag</td></tr>'}</tbody>`;
+}
+
+function renderUnlinked() {
+  const rows = DATA.unlinked_posts || [];
+  $("unlinked-card").classList.toggle("hidden", rows.length === 0);
+  if (!rows.length) return;
+  const body = rows.map(p => `
+    <tr>
+      <td><span class="badge badge-sm" style="background:${PLATFORM_COLOR[p.platform]};color:#fff;border:none">${p.platform}</span></td>
+      <td class="whitespace-nowrap">${p.date}</td>
+      <td class="max-w-md truncate">${p.text || '<span class="opacity-40">(vuoto)</span>'}</td>
+      <td class="text-right">${fmt(p.engagement)}</td>
+      <td><a href="${p.permalink}" target="_blank" rel="noopener" class="link link-primary">apri</a></td>
+      <td><button class="btn btn-xs" onclick='openForm(null, ${JSON.stringify(p).replace(/'/g, "&apos;")})'>aggiungi al calendario</button></td>
+    </tr>`).join("");
+  $("unlinked-table").innerHTML =
+    `<thead><tr><th>piattaforma</th><th>data</th><th>testo</th><th class="text-right">engagement</th><th></th><th></th></tr></thead>
+     <tbody>${body}</tbody>`;
+}
+
+function renderStatusTabs() {
+  const tabs = [["", "Tutte"], ...DATA.statuses.map(s => [s.value, s.label])];
+  $("status-tabs").innerHTML = tabs.map(([v, l]) =>
+    `<button class="btn btn-xs join-item ${v === statusFilter ? "btn-active" : ""}" data-v="${v}">${l}</button>`).join("");
+  $("status-tabs").querySelectorAll("button").forEach(b =>
+    b.onclick = () => { statusFilter = b.dataset.v; renderPiecesTable(); });
+}
+
+function filteredPieces() {
+  const ft = $("f-text").value.toLowerCase();
+  const channel = $("f-channel").value;
+  return DATA.pieces.filter(p =>
+    (!statusFilter || p.status === statusFilter) &&
+    (!channel || p.channel === channel) &&
+    (!ft || p.title.toLowerCase().includes(ft) || (p.brief || "").toLowerCase().includes(ft)));
+}
+
+function renderPiecesTable() {
+  const pieces = filteredPieces();
+  const body = pieces.map(p => {
+    const tagBadges = p.tags.map(t =>
+      `<span class="badge badge-sm" style="background:${t.color || "#94a3b8"};color:#fff;border:none">${t.name}</span>`).join(" ");
+    const metrics = p.metrics
+      ? `${fmt(p.metrics.reach)} reach / ${fmt(p.metrics.engagement)} eng.`
+      : (p.status === "pubblicato" ? '<span class="opacity-40" title="Nessun post reale collegato">non collegato</span>' : "—");
+    return `<tr class="cursor-pointer" onclick='openForm(${p.id})'>
+      <td class="whitespace-nowrap">${p.date}</td>
+      <td>${p.title}</td>
+      <td><span class="badge badge-ghost badge-sm">${p.channel}</span></td>
+      <td class="text-xs opacity-60">${p.format_label}</td>
+      <td><span class="badge badge-sm ${STATUS_COLOR[p.status] || "badge-ghost"}">${p.status_label}</span></td>
+      <td>${tagBadges || '<span class="opacity-40">—</span>'}</td>
+      <td class="text-xs opacity-60">${p.owner || ""}</td>
+      <td class="text-right text-xs">${metrics}</td>
+    </tr>`;
+  }).join("");
+  $("pieces-table").innerHTML =
+    `<thead><tr><th>data</th><th>titolo</th><th>canale</th><th>formato</th><th>stato</th><th>tag</th><th>owner</th><th class="text-right">metriche</th></tr></thead>
+     <tbody>${body || '<tr><td colspan="8" class="opacity-50">nessuna uscita</td></tr>'}</tbody>`;
+
+  $("f-channel").innerHTML = `<option value="">tutti i canali</option>` +
+    [...new Set(DATA.pieces.map(p => p.channel))].map(c => `<option>${c}</option>`).join("");
+}
+
+// ------------------------------------------------------------------- modal
+
+function populateFormSelects() {
+  $("f-channel-form").innerHTML = DATA.cadences.map(c => `<option value="${c.channel}">${c.label}</option>`).join("")
+    || `<option value="instagram">Instagram</option><option value="facebook">Facebook</option>`;
+  $("f-format").innerHTML = DATA.formats.map(f => `<option value="${f.value}">${f.label}</option>`).join("");
+  $("f-status").innerHTML = DATA.statuses.map(s => `<option value="${s.value}">${s.label}</option>`).join("");
+  $("f-stage").innerHTML = `<option value="">—</option>` + DATA.stages.map(s => `<option value="${s.id}">${s.name}</option>`).join("");
+  $("f-tags").innerHTML = DATA.dimensions.map(d => `
+    <div class="mb-1">
+      <div class="text-xs font-semibold opacity-60">${d.name}</div>
+      ${d.tags.map(t => `
+        <label class="label cursor-pointer justify-start gap-1 py-0 inline-flex mr-3">
+          <input type="checkbox" name="tags" value="${t.id}" class="checkbox checkbox-xs" data-tag>
+          <span class="label-text text-xs">${t.name}</span>
+        </label>`).join("")}
+    </div>`).join("");
+}
+
+function openForm(pieceId, prefill) {
+  $("piece-form").reset();
+  $("btn-delete").classList.add("hidden");
+  const piece = pieceId ? DATA.pieces.find(p => p.id === pieceId) : null;
+
+  $("modal-title").textContent = piece ? "Modifica uscita" : "Nuova uscita";
+  $("f-piece-id").value = piece ? piece.id : "";
+  $("f-title").value = piece ? piece.title : (prefill ? (prefill.text || "").slice(0, 100) : "");
+  $("f-channel-form").value = piece ? piece.channel : (prefill ? prefill.platform.toLowerCase() : "instagram");
+  $("f-format").value = piece ? piece.format : (prefill ? (prefill.type === "REELS" || prefill.type === "Reel" ? "reel" : "post") : "post");
+  $("f-planned-date").value = piece ? piece.planned_date : (prefill ? prefill.date : new Date().toISOString().slice(0, 10));
+  $("f-published-date").value = piece ? (piece.published_date || "") : (prefill ? prefill.date : "");
+  $("f-status").value = piece ? piece.status : (prefill ? "pubblicato" : "idea");
+  $("f-stage").value = piece ? (piece.stage_slug ? DATA.stages.find(s => s.slug === piece.stage_slug)?.id || "" : "") : "";
+  $("f-owner").value = piece ? piece.owner : "";
+  $("f-permalink").value = piece ? (piece.permalink || "") : (prefill ? prefill.permalink : "");
+  $("f-hook").value = piece ? piece.hook : "";
+  $("f-brief").value = piece ? piece.brief : "";
+  $("f-notes").value = "";
+
+  document.querySelectorAll('[data-tag]').forEach(cb => { cb.checked = piece && piece.tag_ids.includes(Number(cb.value)); });
+
+  if (piece) {
+    $("btn-delete").classList.remove("hidden");
+    $("btn-delete").onclick = () => {
+      if (!confirm(`Eliminare "${piece.title}"?`)) return;
+      const f = $("delete-form");
+      f.action = `/calendario/${piece.id}/elimina/`;
+      f.innerHTML = document.querySelector('input[name=csrfmiddlewaretoken]').outerHTML;
+      f.submit();
+    };
+  }
+  piece_modal.showModal();
+}
+
+function renderAll() {
+  renderCadenceTable();
+  renderDimTabs();
+  renderTagPerformance();
+  renderUnlinked();
+  renderStatusTabs();
+  renderPiecesTable();
+}
+
+$("f-text").addEventListener("input", renderPiecesTable);
+$("f-channel").addEventListener("change", renderPiecesTable);
+$("btn-reload").onclick = load;
+
+async function load() {
+  try {
+    const r = await fetch(DATA_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    DATA = await r.json();
+    if (!DATA.cadences.length) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
+    $("empty-state").classList.add("hidden");
+    $("content").classList.remove("hidden");
+    populateFormSelects();
+    renderAll();
+  } catch {
+    $("empty-state").classList.remove("hidden");
+    $("content").classList.add("hidden");
+  }
+}
+
+load();
+</script>
+{% endverbatim %}
+{% endblock %}

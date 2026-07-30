@@ -6,8 +6,11 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.utils.text import slugify
 
-from .models import AirbyteRecord, FunnelStage, MarketingEvent
+from .models import (AirbyteRecord, BudgetPlan, ChannelCadence, ContentPiece,
+                     FunnelStage, FunnelStageSource, MarketingEvent, Tag,
+                     TagDimension)
 
 # One entry per Airbyte stream we know how to turn into marketing KPIs.
 # Add a new entry here whenever a new source (Google Ads, TikTok Ads,
@@ -713,6 +716,339 @@ def data_funnel(request):
             'drilldown': drilldown,
         })
     return JsonResponse({'stages': stages})
+
+
+# ------------------------------------------------- pianificazione e calendario
+# The planning layer: a user-defined tag taxonomy that budget, campaigns and
+# content all hang off, so the same cuts (audience, Think-Feel-Do, pilastro
+# creativo...) answer both "where is the money going" and "what did we publish
+# and how did it do". See the July 2026 strategy deck for where the taxonomy
+# and the intended splits come from.
+
+
+def _spend_by_source(insight_rows, sources, period_start=None, period_end=None):
+    """{source_pk: spend} over the given window, for sources linked to a real
+    Meta id. Sources with no external_id can't be reconciled and are skipped
+    (they stay meaningful as intent, just not as actuals)."""
+    out = {}
+    for source in sources:
+        if not source.external_id:
+            continue
+        total = 0.0
+        for d in _fb_insight_rows_for_source(source, insight_rows):
+            date = str(d.get('date_start') or '')[:10]
+            if not date:
+                continue
+            if period_start and date < period_start:
+                continue
+            if period_end and date > period_end:
+                continue
+            total += _num(d.get('spend'))
+        out[source.pk] = total
+    return out
+
+
+def _tag_payload(dimensions):
+    return [{
+        'id': dim.pk,
+        'name': dim.name,
+        'slug': dim.slug,
+        'description': dim.description,
+        'allow_multiple': dim.allow_multiple,
+        'tags': [{
+            'id': t.pk,
+            'name': t.name,
+            'slug': t.slug,
+            'description': t.description,
+            'color': t.color or None,
+            'target_share': t.target_share,
+        } for t in dim.tags.filter(is_active=True)],
+    } for dim in dimensions]
+
+
+@login_required
+def pianificazione(request):
+    cfg = {'data_url': reverse('dashboard:data_pianificazione')}
+    return render(request, 'dashboard/pianificazione.html', {
+        'cfg_json': json.dumps(cfg),
+        'has_data': TagDimension.objects.exists(),
+    })
+
+
+@login_required
+def data_pianificazione(request):
+    plan_id = request.GET.get('plan')
+    plans = list(BudgetPlan.objects.all())
+    plan = next((p for p in plans if str(p.pk) == plan_id), None) or \
+        next((p for p in plans if p.is_active), None) or (plans[0] if plans else None)
+
+    dimensions = list(TagDimension.objects.filter(is_active=True).prefetch_related('tags'))
+    insight_rows = list(_stream_rows('fb_ads_insights'))
+    sources = list(FunnelStageSource.objects.prefetch_related('tags').select_related('stage'))
+
+    period_start = plan.period_start.isoformat() if plan else None
+    period_end = plan.period_end.isoformat() if plan else None
+    spend_by_source = _spend_by_source(insight_rows, sources, period_start, period_end)
+
+    # Planned lines, each resolved to euro + percent, with actual spend attached
+    # when the line points at a real Meta object.
+    lines = []
+    if plan:
+        for line in plan.lines.select_related('stage', 'source').prefetch_related('tags'):
+            lines.append({
+                'id': line.pk,
+                'label': line.label,
+                'stage': line.stage.name if line.stage else None,
+                'stage_slug': line.stage.slug if line.stage else None,
+                'tags': [{'id': t.pk, 'name': t.name, 'dimension': t.dimension.name,
+                          'color': t.color or None} for t in line.tags.all()],
+                'tag_ids': [t.pk for t in line.tags.all()],
+                'percent': line.resolved_percent,
+                'amount': line.resolved_amount,
+                'is_media': line.is_media,
+                'source': line.source.name if line.source else None,
+                'actual_spend': spend_by_source.get(line.source_id) if line.source_id else None,
+                'notes': line.notes,
+            })
+
+    # Actual spend sliced by tag, straight off the tagged Meta campaigns/ad sets
+    # (independent of the budget lines — this is what really ran).
+    spend_by_tag = defaultdict(float)
+    tagged_spend_total = 0.0
+    for source in sources:
+        spend = spend_by_source.get(source.pk)
+        if not spend:
+            continue
+        source_tags = list(source.tags.all())
+        if source_tags:
+            tagged_spend_total += spend
+        for t in source_tags:
+            spend_by_tag[t.pk] += spend
+
+    # Spend that ran through campaigns carrying no tag at all — the honest
+    # "we can't attribute this yet" bucket, so shares aren't quietly wrong.
+    untagged_spend = sum(
+        spend for source in sources
+        if (spend := spend_by_source.get(source.pk)) and not source.tags.exists())
+
+    stages = []
+    for stage in FunnelStage.objects.filter(is_active=True).prefetch_related('sources', 'kpis'):
+        planned = sum(l['amount'] or 0 for l in lines
+                      if l['stage_slug'] == stage.slug and l['is_media'])
+        planned_pct = sum(l['percent'] or 0 for l in lines
+                          if l['stage_slug'] == stage.slug and l['is_media'])
+        actual = sum(spend_by_source.get(s.pk, 0) for s in stage.sources.all())
+        stages.append({
+            'id': stage.pk,
+            'name': stage.name,
+            'slug': stage.slug,
+            'description': stage.description,
+            'planned_amount': planned,
+            'planned_percent': planned_pct,
+            'actual_spend': actual,
+            'kpis': [{
+                'id': k.pk, 'name': k.name, 'unit': k.unit, 'target_value': k.target_value,
+            } for k in stage.kpis.filter(is_active=True)],
+        })
+
+    return JsonResponse({
+        'plans': [{'id': p.pk, 'name': p.name, 'period_start': p.period_start.isoformat(),
+                   'period_end': p.period_end.isoformat(), 'total_budget': p.total_budget,
+                   'is_active': p.is_active, 'notes': p.notes} for p in plans],
+        'plan': ({'id': plan.pk, 'name': plan.name, 'total_budget': plan.total_budget,
+                  'period_start': period_start, 'period_end': period_end, 'notes': plan.notes}
+                 if plan else None),
+        'dimensions': _tag_payload(dimensions),
+        'lines': lines,
+        'stages': stages,
+        'spend_by_tag': {str(k): v for k, v in spend_by_tag.items()},
+        'tagged_spend_total': tagged_spend_total,
+        'untagged_spend': untagged_spend,
+    })
+
+
+def _published_post_index():
+    """Real published Facebook + Instagram posts, keyed by both permalink and
+    post id, so a ContentPiece can be matched by whichever the user pasted."""
+    index = {}
+    for platform, posts in (('Facebook', _facebook_posts()), ('Instagram', _instagram_posts())):
+        for p in posts:
+            entry = {**p, 'platform': platform}
+            if p.get('permalink'):
+                index[p['permalink'].rstrip('/')] = entry
+            if p.get('id'):
+                index[str(p['id'])] = entry
+    return index
+
+
+@login_required
+def calendario(request):
+    cfg = {'data_url': reverse('dashboard:data_calendario')}
+    return render(request, 'dashboard/calendario.html', {
+        'cfg_json': json.dumps(cfg),
+        'has_data': ChannelCadence.objects.exists(),
+    })
+
+
+@login_required
+def data_calendario(request):
+    post_index = _published_post_index()
+    dimensions = list(TagDimension.objects.filter(is_active=True).prefetch_related('tags'))
+
+    pieces = []
+    for piece in ContentPiece.objects.select_related('stage', 'campaign_source').prefetch_related('tags'):
+        key = (piece.external_permalink or '').rstrip('/') or str(piece.external_post_id or '')
+        match = post_index.get(key) if key else None
+        pieces.append({
+            'id': piece.pk,
+            'title': piece.title,
+            'channel': piece.channel,
+            'format': piece.content_format,
+            'format_label': piece.get_content_format_display(),
+            'status': piece.status,
+            'status_label': piece.get_status_display(),
+            'owner': piece.owner,
+            'planned_date': piece.planned_date.isoformat(),
+            'published_date': piece.published_date.isoformat() if piece.published_date else None,
+            'date': piece.effective_date.isoformat(),
+            'stage': piece.stage.name if piece.stage else None,
+            'stage_slug': piece.stage.slug if piece.stage else None,
+            'tags': [{'id': t.pk, 'name': t.name, 'dimension': t.dimension.name,
+                      'dimension_slug': t.dimension.slug, 'color': t.color or None}
+                     for t in piece.tags.all()],
+            'tag_ids': [t.pk for t in piece.tags.all()],
+            'campaign_source': piece.campaign_source.name if piece.campaign_source else None,
+            'brief': piece.brief,
+            'hook': piece.hook,
+            'permalink': piece.external_permalink or (match or {}).get('permalink'),
+            # Real metrics, only when the piece is actually linked to a synced post.
+            'metrics': ({
+                'platform': match['platform'],
+                'reach': match.get('reach'),
+                'engagement': match.get('engagement'),
+                'likes': match.get('likes'),
+                'comments': match.get('comments'),
+            } if match else None),
+        })
+
+    cadences = [{
+        'channel': c.channel, 'label': c.label, 'target_min': c.target_min,
+        'target_max': c.target_max, 'period': c.period, 'role': c.role,
+    } for c in ChannelCadence.objects.filter(is_active=True)]
+
+    # Published posts not yet attached to any calendar entry — offered as
+    # one-click links so the calendar can be reconciled with what really went out.
+    linked_keys = {(p['permalink'] or '').rstrip('/') for p in pieces if p['permalink']}
+    unlinked = sorted(
+        ({'platform': e['platform'], 'date': e['date'], 'text': e['text'][:140],
+          'permalink': e['permalink'], 'type': e['type'],
+          'engagement': e.get('engagement'), 'reach': e.get('reach')}
+         for key, e in post_index.items()
+         if e.get('permalink') and key == e['permalink'].rstrip('/')
+         and e['permalink'].rstrip('/') not in linked_keys),
+        key=lambda r: r['date'], reverse=True)[:60]
+
+    return JsonResponse({
+        'pieces': pieces,
+        'cadences': cadences,
+        'dimensions': _tag_payload(dimensions),
+        'stages': [{'id': s.pk, 'name': s.name, 'slug': s.slug}
+                   for s in FunnelStage.objects.filter(is_active=True)],
+        'formats': [{'value': v, 'label': l} for v, l in ContentPiece.FORMAT_CHOICES],
+        'statuses': [{'value': v, 'label': l} for v, l in ContentPiece.STATUS_CHOICES],
+        'unlinked_posts': unlinked,
+    })
+
+
+@login_required
+def content_piece_save(request):
+    """Create or update one calendar entry. Kept as a plain form POST (no JSON
+    API) to match how the events page already works."""
+    if request.method != 'POST':
+        return redirect('dashboard:calendario')
+
+    piece_id = (request.POST.get('piece_id') or '').strip()
+    title = (request.POST.get('title') or '').strip()
+    planned_date = (request.POST.get('planned_date') or '').strip()
+    channel = (request.POST.get('channel') or '').strip()
+    if not title or not planned_date or not channel:
+        messages.error(request, 'Titolo, canale e data pianificata sono obbligatori.')
+        return redirect('dashboard:calendario')
+
+    published_date = (request.POST.get('published_date') or '').strip() or None
+    stage_id = (request.POST.get('stage') or '').strip() or None
+    source_id = (request.POST.get('campaign_source') or '').strip() or None
+    fields = {
+        'title': title,
+        'channel': channel,
+        'content_format': (request.POST.get('content_format') or 'post').strip(),
+        'status': (request.POST.get('status') or 'idea').strip(),
+        'owner': (request.POST.get('owner') or '').strip(),
+        'planned_date': planned_date,
+        'published_date': published_date,
+        'stage_id': stage_id,
+        'campaign_source_id': source_id,
+        'brief': (request.POST.get('brief') or '').strip(),
+        'hook': (request.POST.get('hook') or '').strip(),
+        'external_permalink': (request.POST.get('external_permalink') or '').strip(),
+        'notes': (request.POST.get('notes') or '').strip(),
+    }
+    tag_ids = request.POST.getlist('tags')
+
+    if piece_id:
+        piece = ContentPiece.objects.filter(pk=piece_id).first()
+        if not piece:
+            messages.error(request, 'Uscita non trovata.')
+            return redirect('dashboard:calendario')
+        for k, v in fields.items():
+            setattr(piece, k, v)
+        piece.save()
+        messages.success(request, f'Uscita "{title}" aggiornata.')
+    else:
+        piece = ContentPiece.objects.create(**fields)
+        messages.success(request, f'Uscita "{title}" aggiunta.')
+    piece.tags.set(Tag.objects.filter(pk__in=tag_ids))
+    return redirect('dashboard:calendario')
+
+
+@login_required
+def content_piece_delete(request, pk):
+    if request.method == 'POST':
+        piece = ContentPiece.objects.filter(pk=pk).first()
+        if piece:
+            title = piece.title
+            piece.delete()
+            messages.success(request, f'Uscita "{title}" eliminata.')
+    return redirect('dashboard:calendario')
+
+
+@login_required
+def tag_save(request):
+    """Inline tag creation from the planning page — the taxonomy is meant to be
+    grown as the strategy evolves, not fixed at seed time."""
+    if request.method != 'POST':
+        return redirect('dashboard:pianificazione')
+    dimension_id = (request.POST.get('dimension') or '').strip()
+    name = (request.POST.get('name') or '').strip()
+    dimension = TagDimension.objects.filter(pk=dimension_id).first()
+    if not dimension or not name:
+        messages.error(request, 'Dimensione e nome del tag sono obbligatori.')
+        return redirect('dashboard:pianificazione')
+
+    share = (request.POST.get('target_share') or '').strip()
+    slug = slugify(name)[:50] or 'tag'
+    base, i = slug, 2
+    while Tag.objects.filter(dimension=dimension, slug=slug).exists():
+        slug = f'{base}-{i}'
+        i += 1
+    Tag.objects.create(
+        dimension=dimension, name=name, slug=slug,
+        target_share=float(share) if share else None,
+        description=(request.POST.get('description') or '').strip(),
+        color=(request.POST.get('color') or '').strip(),
+        order=(dimension.tags.count() or 0) + 1)
+    messages.success(request, f'Tag "{name}" aggiunto a {dimension.name}.')
+    return redirect('dashboard:pianificazione')
 
 
 @login_required

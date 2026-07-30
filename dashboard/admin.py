@@ -1,8 +1,10 @@
 from django import forms
 from django.contrib import admin
 
-from .models import (AirbyteRecord, FunnelKPI, FunnelKPIValue, FunnelStage,
-                     FunnelStageSource, ImportLog, MarketingEvent)
+from .models import (AirbyteRecord, BudgetLine, BudgetPlan, ChannelCadence,
+                     ContentPiece, FunnelKPI, FunnelKPIValue, FunnelStage,
+                     FunnelStageSource, ImportLog, MarketingEvent, Tag,
+                     TagDimension)
 
 
 @admin.register(ImportLog)
@@ -125,6 +127,110 @@ class FunnelKPIValueAdmin(admin.ModelAdmin):
 @admin.register(FunnelStageSource)
 class FunnelStageSourceAdmin(admin.ModelAdmin):
     form = FunnelStageSourceForm
-    list_display = ('stage', 'kind', 'name', 'external_id')
-    list_filter = ('stage', 'kind')
-    fields = ('stage', 'pick_campaign', 'pick_ad_set', 'pick_ad', 'kind', 'name', 'external_id', 'notes')
+    list_display = ('stage', 'kind', 'name', 'external_id', 'tag_list')
+    list_filter = ('stage', 'kind', 'tags__dimension', 'tags')
+    filter_horizontal = ('tags',)
+    fields = ('stage', 'pick_campaign', 'pick_ad_set', 'pick_ad', 'kind', 'name', 'external_id',
+              'tags', 'notes')
+
+    @admin.display(description='Tag')
+    def tag_list(self, obj):
+        return ', '.join(t.name for t in obj.tags.all()) or '—'
+
+
+# -------------------------------------------------------------- tag taxonomy
+
+class TagInline(admin.TabularInline):
+    model = Tag
+    extra = 0
+    prepopulated_fields = {'slug': ('name',)}
+    fields = ('name', 'slug', 'target_share', 'color', 'description', 'order', 'is_active')
+
+
+@admin.register(TagDimension)
+class TagDimensionAdmin(admin.ModelAdmin):
+    list_display = ('name', 'order', 'allow_multiple', 'tag_count', 'share_total', 'is_active')
+    list_editable = ('order',)
+    prepopulated_fields = {'slug': ('name',)}
+    inlines = [TagInline]
+
+    @admin.display(description='N. tag')
+    def tag_count(self, obj):
+        return obj.tags.count()
+
+    @admin.display(description='Somma quote')
+    def share_total(self, obj):
+        shares = [t.target_share for t in obj.tags.all() if t.target_share is not None]
+        if not shares:
+            return '—'
+        total = sum(shares)
+        return f'{total:g}%' + ('' if abs(total - 100) < 0.01 else ' ⚠')
+
+
+@admin.register(Tag)
+class TagAdmin(admin.ModelAdmin):
+    list_display = ('dimension', 'name', 'target_share', 'order', 'is_active')
+    list_filter = ('dimension', 'is_active')
+    search_fields = ('name', 'description')
+    prepopulated_fields = {'slug': ('name',)}
+
+
+# ------------------------------------------------------------ budget planning
+
+class BudgetLineInline(admin.TabularInline):
+    model = BudgetLine
+    extra = 0
+    filter_horizontal = ('tags',)
+    fields = ('order', 'label', 'stage', 'tags', 'source', 'percent', 'amount', 'is_media', 'notes')
+
+
+@admin.register(BudgetPlan)
+class BudgetPlanAdmin(admin.ModelAdmin):
+    list_display = ('name', 'period_start', 'period_end', 'total_budget', 'media_percent', 'is_active')
+    inlines = [BudgetLineInline]
+
+    @admin.display(description='% media allocata')
+    def media_percent(self, obj):
+        total = sum(l.resolved_percent or 0 for l in obj.lines.filter(is_media=True))
+        return f'{total:g}%' + ('' if abs(total - 100) < 0.01 else ' ⚠')
+
+
+@admin.register(BudgetLine)
+class BudgetLineAdmin(admin.ModelAdmin):
+    list_display = ('plan', 'label', 'stage', 'percent', 'amount', 'is_media')
+    list_filter = ('plan', 'stage', 'is_media', 'tags')
+    filter_horizontal = ('tags',)
+
+
+# -------------------------------------------------------- editorial calendar
+
+@admin.register(ChannelCadence)
+class ChannelCadenceAdmin(admin.ModelAdmin):
+    list_display = ('label', 'channel', 'target_min', 'target_max', 'period', 'role', 'order', 'is_active')
+    list_editable = ('target_min', 'target_max', 'period', 'order')
+
+
+@admin.register(ContentPiece)
+class ContentPieceAdmin(admin.ModelAdmin):
+    list_display = ('planned_date', 'title', 'channel', 'content_format', 'status', 'stage',
+                    'owner', 'tag_list', 'is_linked')
+    list_filter = ('status', 'channel', 'content_format', 'stage', 'tags__dimension', 'tags', 'owner')
+    search_fields = ('title', 'brief', 'hook', 'notes', 'external_permalink')
+    date_hierarchy = 'planned_date'
+    filter_horizontal = ('tags',)
+    fieldsets = (
+        (None, {'fields': ('title', 'channel', 'content_format', 'status', 'owner')}),
+        ('Pianificazione', {'fields': ('planned_date', 'published_date', 'stage', 'tags', 'campaign_source')}),
+        ('Contenuto', {'fields': ('brief', 'hook', 'notes')}),
+        ('Metriche reali', {'fields': ('external_permalink', 'external_post_id'),
+                            'description': 'Incolla il permalink del post pubblicato per agganciare '
+                                           'reach ed engagement reali a questa uscita.'}),
+    )
+
+    @admin.display(description='Tag')
+    def tag_list(self, obj):
+        return ', '.join(t.name for t in obj.tags.all()) or '—'
+
+    @admin.display(description='Metriche', boolean=True)
+    def is_linked(self, obj):
+        return bool(obj.external_permalink or obj.external_post_id)
