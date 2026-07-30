@@ -25,7 +25,11 @@
   <!-- ---------------------------------------------------------- BOARD -->
   <div id="view-board">
     <div class="alert alert-info mb-4 text-sm">
-      <span>Trascina una scheda su una fase per assegnarla. Gli <strong>ad set</strong> e gli <strong>ad</strong> ereditano la fase della campagna: assegnane uno solo se deve stare in una fase diversa. I numeri sulle schede sono la resa reale nel periodo sincronizzato.</span>
+      <span>
+        Trascina una scheda <strong>su una colonna</strong> per assegnarle solo la fase, oppure
+        <strong>sopra una scheda già taggata</strong> per copiarne in un colpo fase e tutti i tag.
+        Gli <strong>ad set</strong> e gli <strong>ad</strong> ereditano dalla campagna: assegnali solo se devono stare altrove.
+      </span>
     </div>
 
     <div class="flex flex-wrap items-center gap-3 mb-4">
@@ -89,6 +93,12 @@
   </div>
   <form method="dialog" class="modal-backdrop"><button>chiudi</button></form>
 </dialog>
+
+<style>
+  /* Only hint the "copy my setup" targets while a drag is actually happening,
+     so the board stays calm the rest of the time. */
+  body.dragging .card-item.is-model { outline: 2px dashed rgba(13, 42, 140, .35); outline-offset: 2px; }
+</style>
 
 <script>const TAG_CFG = {{ cfg_json|safe }};</script>
 {% verbatim %}
@@ -193,9 +203,13 @@ function cardHtml(i) {
   const plat = i.platform
     ? `<span class="badge badge-xs" style="background:${PLATFORM_COLOR[i.platform]};color:#fff;border:none">${i.platform}</span> `
     : "";
+  // A card carrying tags can act as a model: while something is being dragged
+  // it gets a dashed outline to advertise "drop here to copy my setup".
+  const isModel = (i.effective_tags || []).length > 0;
   return `
-    <div class="border border-base-300 rounded-lg p-2 bg-base-100 cursor-grab hover:border-primary card-item"
-         draggable="true" data-kind="${i.kind}" data-id="${esc(i.id)}">
+    <div class="border border-base-300 rounded-lg p-2 bg-base-100 cursor-grab hover:border-primary card-item${isModel ? " is-model" : ""}"
+         draggable="true" data-kind="${i.kind}" data-id="${esc(i.id)}"
+         ${isModel ? 'title="Trascina un\'altra scheda qui sopra per copiarle fase e tag"' : ""}>
       <div class="text-xs font-medium leading-snug line-clamp-2" title="${esc(i.name)}">${plat}${esc(i.name)}</div>
       <div class="text-[10px] opacity-50 mt-1">${stats}</div>
       <div class="mt-1 flex flex-wrap gap-1">${tagBadges(i.effective_tags || [], i.inherited_dimensions, 3)}</div>
@@ -207,10 +221,41 @@ function wireDnd() {
     el.ondragstart = (e) => {
       e.dataTransfer.setData("text/plain", JSON.stringify({ kind: el.dataset.kind, id: el.dataset.id }));
       el.classList.add("opacity-40");
+      document.body.classList.add("dragging");
     };
-    el.ondragend = () => el.classList.remove("opacity-40");
+    el.ondragend = () => {
+      el.classList.remove("opacity-40");
+      document.body.classList.remove("dragging");
+    };
     el.onclick = () => openTagModal(el.dataset.kind, el.dataset.id);
+
+    // Dropping ONTO an already-tagged card copies its whole setup — stage and
+    // every tag — onto the dragged one. This is the fast path: tag one card
+    // properly, then drop the others on top of it instead of re-tagging each.
+    el.ondragover = (e) => {
+      const model = findItem(el.dataset.kind, el.dataset.id);
+      if (!model || !(model.effective_tags || []).length) return;   // nothing to copy
+      e.preventDefault();
+      e.stopPropagation();
+      el.classList.add("ring", "ring-primary", "ring-offset-1");
+    };
+    el.ondragleave = () => el.classList.remove("ring", "ring-primary", "ring-offset-1");
+    el.ondrop = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();   // don't also fire the column's plain stage-only drop
+      el.classList.remove("ring", "ring-primary", "ring-offset-1");
+      const { kind, id } = JSON.parse(e.dataTransfer.getData("text/plain"));
+      if (kind === el.dataset.kind && String(id) === String(el.dataset.id)) return;
+      const item = findItem(kind, id);
+      const model = findItem(el.dataset.kind, el.dataset.id);
+      if (!item || !model) return;
+      const tagIds = (model.effective_tags || []).map(t => t.id);
+      if (!(await save(item, { stage_id: model.stage_id ?? null, tag_ids: tagIds }))) return;
+      toast(`"${item.name.slice(0, 40)}" ha ereditato fase e ${tagIds.length} tag da "${model.name.slice(0, 40)}"`);
+      await load();
+    };
   });
+
   document.querySelectorAll(".drop-zone").forEach(zone => {
     zone.ondragover = (e) => { e.preventDefault(); zone.classList.add("bg-base-200", "rounded"); };
     zone.ondragleave = () => zone.classList.remove("bg-base-200", "rounded");
@@ -225,6 +270,21 @@ function wireDnd() {
       await load();
     };
   });
+}
+
+let toastTimer = null;
+function toast(msg) {
+  let el = document.getElementById("toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    el.className = "fixed bottom-6 right-6 alert alert-success shadow-lg w-auto max-w-md z-50 text-sm";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add("hidden"), 3500);
 }
 
 function findItem(kind, id) {
