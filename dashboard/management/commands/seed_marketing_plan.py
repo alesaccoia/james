@@ -127,24 +127,21 @@ STAGE_SHARES = {'awareness': 30.0, 'consideration': 20.0, 'conversion': 50.0}
 # Meta campaign architecture: "Poche campagne stabili, molte varianti creative".
 # (label, stage_slug, percent, [tag slugs], is_media, notes)
 #
-# Campaigns 2 and 3 are deliberately left with stage=None: the deck itself
-# scopes them as "Consideration -> Conversion" without giving a split between
-# the two, so forcing them onto a single stage would overstate that stage's
-# planned budget (Conversion would show 70% here vs. the 50% target the deck
-# states separately in STAGE_SHARES). The per-stage split lives only in
-# STAGE_SHARES/the stage description; these lines are budget tracking, not a
-# claim about exactly which stage the spend lands in.
+# Campaigns 2 and 3 are attributed to Conversion (per Alessandro, 29/07/2026):
+# although the deck scopes them as "Consideration -> Conversion", in practice
+# both are Conversion; Consideration is intentionally left with no campaign
+# for now. This means Consideration will show 0 planned here even though
+# STAGE_SHARES/the stage description still states its 20% target - that gap
+# is real, not a bug, until a campaign is actually built for that stage.
 CAMPAIGN_LINES = [
     ('1. Awareness — genitori', 'awareness', 21.0, ['genitori'], True,
      'Ad set genitori (70% del 30% di awareness). Obiettivo awareness/video, senza form.'),
     ('1. Awareness — studenti', 'awareness', 9.0, ['studenti'], True,
      'Ad set studenti (30% del 30% di awareness). Obiettivo awareness/video, senza form.'),
-    ('2. Lead Gen Prospecting', None, 60.0, ['genitori', 'do'], True,
-     'Genitori ampi; segmenti solo se con volume. Obiettivo leads, Instant Form. '
-     'Copre Consideration -> Conversion, non un singolo stage (vedi nota sopra).'),
-    ('3. Lead Gen Retargeting', None, 10.0, ['do'], True,
-     'Engager, video viewer, lead non acquistati. Obiettivo leads, Instant Form. '
-     'Copre Consideration -> Conversion, non un singolo stage (vedi nota sopra).'),
+    ('2. Lead Gen Prospecting', 'conversion', 60.0, ['genitori', 'do'], True,
+     'Genitori ampi; segmenti solo se con volume. Obiettivo leads, Instant Form.'),
+    ('3. Lead Gen Retargeting', 'conversion', 10.0, ['do'], True,
+     'Engager, video viewer, lead non acquistati. Obiettivo leads, Instant Form.'),
     ('CRM / riattivazione', 'crm-retention', None, [], False,
      'Effort operativo, non budget media. Database segmentato, email/contatto diretto.'),
 ]
