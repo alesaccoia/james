@@ -864,13 +864,14 @@ def _resolve_tags(kind, external_id, taggings, ad_parent, adset_parent):
         tagging = taggings.get((ck, cid))
         if not tagging:
             continue
+        level_by_dim = defaultdict(list)
         for tag in tagging['tags']:
-            dim = tag['dimension_slug']
+            level_by_dim[tag['dimension_slug']].append(tag)
+        for dim, tags in level_by_dim.items():
             if dim in by_dim:      # a nearer level already decided this dimension
                 continue
-            by_dim.setdefault(dim, []).append(tag)
-        for dim in {t['dimension_slug'] for t in tagging['tags']}:
-            inherited_from.setdefault(dim, None if level == 0 else ck)
+            by_dim[dim] = tags
+            inherited_from[dim] = None if level == 0 else ck
     return by_dim, inherited_from
 
 
@@ -1108,6 +1109,73 @@ def _spend_by_source(insight_rows, sources, period_start=None, period_end=None):
     return out
 
 
+def _spend_by_tag_dimension(insight_rows, taggings, ad_parent, adset_parent,
+                            period_start=None, period_end=None):
+    """Real spend attributed to each tag, dimension by dimension.
+
+    Two rules make the numbers add up:
+
+    * An entity carrying several tags of the *same* dimension splits its spend
+      equally among them. Tagging a campaign both "Genitori" and "Studenti"
+      means half each, not the whole amount counted twice.
+    * Across *different* dimensions the full spend is counted once per
+      dimension, so each dimension's shares are comparable with the split
+      planned for that same axis.
+
+    Tags resolve per ad through the campaign -> ad set -> ad inheritance, so
+    tagging a campaign is enough to attribute everything running under it.
+
+    Returns (spend per tag id, tagged total per dimension, spend carrying no tag).
+    """
+    spend_by_tag = defaultdict(float)
+    dim_totals = defaultdict(float)
+    untagged = 0.0
+    tagged_total = 0.0
+    cache = {}
+
+    for d in insight_rows:
+        day = str(d.get('date_start') or '')[:10]
+        if not day:
+            continue
+        if period_start and day < period_start:
+            continue
+        if period_end and day > period_end:
+            continue
+        spend = _num(d.get('spend'))
+        if not spend:
+            continue
+
+        aid = str(d.get('ad_id') or '')
+        asid = str(d.get('adset_id') or '')
+        cid = str(d.get('campaign_id') or '')
+        key = (aid, asid, cid)
+        if key not in cache:
+            # _resolve_tags already walks ad -> ad set -> campaign; only fall
+            # back when the row has no ad id at all.
+            if aid:
+                by_dim, _ = _resolve_tags('ad', aid, taggings, ad_parent, adset_parent)
+            elif asid:
+                by_dim, _ = _resolve_tags('ad_set', asid, taggings, ad_parent, adset_parent)
+            elif cid:
+                by_dim, _ = _resolve_tags('campaign', cid, taggings, ad_parent, adset_parent)
+            else:
+                by_dim = {}
+            cache[key] = by_dim
+        by_dim = cache[key]
+
+        if not by_dim:
+            untagged += spend
+            continue
+        tagged_total += spend
+        for dim_slug, tags in by_dim.items():
+            share = spend / len(tags)
+            for t in tags:
+                spend_by_tag[t['id']] += share
+            dim_totals[dim_slug] += spend
+
+    return spend_by_tag, dim_totals, untagged, tagged_total
+
+
 def _tag_payload(dimensions):
     return [{
         'id': dim.pk,
@@ -1128,7 +1196,8 @@ def _tag_payload(dimensions):
 
 @login_required
 def pianificazione(request):
-    cfg = {'data_url': reverse('dashboard:data_pianificazione')}
+    cfg = {'data_url': reverse('dashboard:data_pianificazione'),
+           'tagging_url': reverse('dashboard:tagging')}
     return render(request, 'dashboard/pianificazione.html', {
         'cfg_json': json.dumps(cfg),
         'has_data': TagDimension.objects.exists(),
@@ -1161,7 +1230,8 @@ def data_pianificazione(request):
                 'stage': line.stage.name if line.stage else None,
                 'stage_slug': line.stage.slug if line.stage else None,
                 'tags': [{'id': t.pk, 'name': t.name, 'dimension': t.dimension.name,
-                          'color': t.color or None} for t in line.tags.all()],
+                          'dimension_slug': t.dimension.slug, 'color': t.color or None}
+                         for t in line.tags.all()],
                 'tag_ids': [t.pk for t in line.tags.all()],
                 'percent': line.resolved_percent,
                 'amount': line.resolved_amount,
@@ -1171,25 +1241,30 @@ def data_pianificazione(request):
                 'notes': line.notes,
             })
 
-    # Actual spend sliced by tag, straight off the tagged Meta campaigns/ad sets
-    # (independent of the budget lines — this is what really ran).
-    spend_by_tag = defaultdict(float)
-    tagged_spend_total = 0.0
-    for source in sources:
-        spend = spend_by_source.get(source.pk)
-        if not spend:
-            continue
-        source_tags = list(source.tags.all())
-        if source_tags:
-            tagged_spend_total += spend
-        for t in source_tags:
-            spend_by_tag[t.pk] += spend
+    # Actual spend sliced by tag, resolved per ad through the tagging overlay
+    # and its campaign -> ad set -> ad inheritance (the same resolution the
+    # Tagging board shows), restricted to the plan's period.
+    ad_parent, adset_parent, _n = _meta_hierarchy(insight_rows)
+    taggings = _load_taggings()
+    spend_by_tag, dim_totals, untagged_spend, tagged_spend_total = _spend_by_tag_dimension(
+        insight_rows, taggings, ad_parent, adset_parent, period_start, period_end)
 
-    # Spend that ran through campaigns carrying no tag at all — the honest
-    # "we can't attribute this yet" bucket, so shares aren't quietly wrong.
-    untagged_spend = sum(
-        spend for source in sources
-        if (spend := spend_by_source.get(source.pk)) and not source.tags.exists())
+    # The same split applied to the *planned* side, so a budget line tagged
+    # "Genitori" actually shows up as planned Genitori budget - which is what
+    # you'd expect looking at the plan table right above.
+    planned_by_tag, planned_dim_totals = defaultdict(float), defaultdict(float)
+    for line in lines:
+        amount = line['amount'] or 0
+        if not amount or not line['is_media'] or not line['tags']:
+            continue
+        by_dim = defaultdict(list)
+        for t in line['tags']:
+            by_dim[t['dimension_slug']].append(t)
+        for dim_slug, tags in by_dim.items():
+            share = amount / len(tags)
+            for t in tags:
+                planned_by_tag[t['id']] += share
+            planned_dim_totals[dim_slug] += amount
 
     stages = []
     for stage in FunnelStage.objects.filter(is_active=True).prefetch_related('sources', 'kpis'):
@@ -1222,6 +1297,9 @@ def data_pianificazione(request):
         'lines': lines,
         'stages': stages,
         'spend_by_tag': {str(k): v for k, v in spend_by_tag.items()},
+        'dimension_totals': dict(dim_totals),
+        'planned_by_tag': {str(k): v for k, v in planned_by_tag.items()},
+        'planned_dimension_totals': dict(planned_dim_totals),
         'tagged_spend_total': tagged_spend_total,
         'untagged_spend': untagged_spend,
     })

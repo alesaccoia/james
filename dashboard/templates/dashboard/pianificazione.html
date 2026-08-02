@@ -45,9 +45,9 @@
 
   <div class="divider mt-8">Allocazione per tag</div>
   <p class="text-sm opacity-60 -mt-4 mb-4">
-    Per ogni dimensione: quota <strong>prevista</strong> (quella che hai dichiarato sul tag) contro quota
+    Per ogni dimensione: quota <strong>da piano</strong> (dalle voci di piano taggate) contro quota
     <strong>effettiva</strong> della spesa, ricavata dalle campagne Meta che portano quel tag.
-    Una dimensione senza quote previste mostra solo l'effettivo.
+    Una dimensione senza voci di piano taggate mostra solo l'effettivo.
   </p>
 
   <div id="dimensions" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6"></div>
@@ -101,6 +101,7 @@
 "use strict";
 
 const DATA_URL = PLAN_CFG.data_url;
+const TAGGING_URL = PLAN_CFG.tagging_url;
 const PALETTE = ["#0d2a8c", "#f96a34", "#ffc83d", "#34d399", "#a78bfa", "#f472b6", "#8a7500", "#94a3b8"];
 const C_PLANNED = "#0d2a8c";
 const C_ACTUAL = "#f96a34";
@@ -161,7 +162,7 @@ function renderAttributionWarning() {
   el.innerHTML = `<span><strong>${eur(untagged)}</strong> di spesa reale (${pct1(share)} del totale)
     passa da campagne senza nessun tag, quindi non entra nelle quote effettive qui sotto.
     Per farla rientrare, assegna i tag alle campagne
-    <a href="/admin/dashboard/funnelstagesource/" class="link" target="_blank" rel="noopener">da qui</a>.</span>`;
+    <a href="${TAGGING_URL}" class="link">da qui</a>.</span>`;
 }
 
 function renderStagesChart() {
@@ -218,7 +219,6 @@ function renderDimensions() {
   Object.values(charts.dims).forEach(c => c && c.destroy());
   charts.dims = {};
 
-  const taggedTotal = DATA.tagged_spend_total || 0;
   $("dimensions").innerHTML = DATA.dimensions.map(dim => `
     <div class="card bg-base-100 shadow">
       <div class="card-body">
@@ -232,18 +232,25 @@ function renderDimensions() {
   DATA.dimensions.forEach(dim => {
     const tags = dim.tags;
     if (!tags.length) return;
+
+    // Each dimension has its own denominator: the spend actually classified
+    // along that axis. Using one global total instead would make a dimension
+    // that's only half tagged look like it under-delivered everywhere.
+    const dimSpend = (DATA.dimension_totals || {})[dim.slug] || 0;
+    const dimPlanned = (DATA.planned_dimension_totals || {})[dim.slug] || 0;
+
     const actualAbs = tags.map(t => DATA.spend_by_tag[String(t.id)] || 0);
-    // Effective share is computed against spend that carries *any* tag, so it
-    // is comparable with the planned shares (which also sum to 100 within the
-    // dimension). Untagged spend is called out separately above.
-    const actualShare = tags.map((t, i) => taggedTotal ? (actualAbs[i] / taggedTotal * 100) : 0);
-    const hasPlanned = tags.some(t => t.target_share != null);
+    const actualShare = tags.map((t, i) => dimSpend ? (actualAbs[i] / dimSpend * 100) : 0);
+    const plannedAbs = tags.map(t => (DATA.planned_by_tag || {})[String(t.id)] || 0);
+    const planShare = tags.map((t, i) => dimPlanned ? (plannedAbs[i] / dimPlanned * 100) : null);
+
+    const hasPlanLines = dimPlanned > 0;
 
     const datasets = [];
-    if (hasPlanned) {
+    if (hasPlanLines) {
       datasets.push({
-        label: "Quota prevista", data: tags.map(t => t.target_share ?? null),
-        backgroundColor: C_PLANNED, borderRadius: 2,
+        label: "Dalle voci di piano", data: planShare, _abs: plannedAbs,
+        backgroundColor: "#94a3b8", borderRadius: 2,
       });
     }
     datasets.push({
@@ -272,18 +279,18 @@ function renderDimensions() {
     });
 
     const body = tags.map((t, i) => {
-      const planned = t.target_share;
+      const planned = planShare[i];
       const delta = planned == null ? null : actualShare[i] - planned;
       return `<tr>
         <td><span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${colorOf(t, i)}"></span>${t.name}</td>
-        <td class="text-right">${pct(planned)}</td>
+        <td class="text-right">${pct1(planShare[i])}</td>
         <td class="text-right">${pct1(actualShare[i])}</td>
         <td class="text-right">${eur(actualAbs[i])}</td>
         <td class="text-right ${delta == null ? "" : (Math.abs(delta) < 5 ? "opacity-50" : (delta > 0 ? "text-warning" : "text-info"))}">${delta == null ? "—" : (delta > 0 ? "+" : "") + pct1(delta)}</td>
       </tr>`;
     }).join("");
     $(`table-dim-${dim.slug}`).innerHTML =
-      `<thead><tr><th>tag</th><th class="text-right">prev.</th><th class="text-right">eff.</th><th class="text-right">spesa</th><th class="text-right">delta</th></tr></thead><tbody>${body}</tbody>`;
+      `<thead><tr><th>tag</th><th class="text-right">piano</th><th class="text-right">eff.</th><th class="text-right">spesa</th><th class="text-right">delta</th></tr></thead><tbody>${body}</tbody>`;
   });
 
   $("new-tag-dimension").innerHTML = DATA.dimensions.map(d =>
