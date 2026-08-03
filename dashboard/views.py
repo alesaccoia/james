@@ -1312,6 +1312,22 @@ def data_pianificazione(request):
 
 
 @login_required
+def tag_target_save(request, pk):
+    """Inline edit of a tag's planned target share, from the Allocazione per
+    tag cards — the top-down "where do we want this axis to land" number,
+    independent of whichever budget lines happen to be tagged so far."""
+    if request.method != 'POST':
+        return JsonResponse({'ok': False, 'error': 'POST required'}, status=405)
+    tag = Tag.objects.filter(pk=pk).first()
+    if not tag:
+        return JsonResponse({'ok': False, 'error': 'tag non trovato'}, status=404)
+    raw = (request.POST.get('target_share') or '').strip()
+    tag.target_share = float(raw) if raw else None
+    tag.save(update_fields=['target_share'])
+    return JsonResponse({'ok': True, 'target_share': tag.target_share})
+
+
+@login_required
 def budget_line_save(request):
     """Create or update one budget-plan line from the inline editor on
     Pianificazione, so tagging a line doesn't require the Django admin."""

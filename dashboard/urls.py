@@ -35,6 +35,7 @@ urlpatterns = [
     path('pianificazione/', views.pianificazione, name='pianificazione'),
     path('pianificazione/data.json', views.data_pianificazione, name='data_pianificazione'),
     path('pianificazione/tag/nuovo/', views.tag_save, name='tag_save'),
+    path('pianificazione/tag/<int:pk>/target/', views.tag_target_save, name='tag_target_save'),
     path('pianificazione/linea/salva/', views.budget_line_save, name='budget_line_save'),
     path('pianificazione/linea/<int:pk>/elimina/', views.budget_line_delete, name='budget_line_delete'),
 
