@@ -45,10 +45,9 @@
 
   <div class="divider mt-8">Allocazione per tag</div>
   <p class="text-sm opacity-60 -mt-4 mb-4">
-    Per ogni dimensione: <strong>target</strong> (lo split che vuoi raggiungere, modificabile qui sotto
-    per ogni tag) contro quota <strong>da piano</strong> (dalle voci di piano taggate) contro quota
+    Per ogni dimensione: quota <strong>da piano</strong> (dalle voci di piano taggate) contro quota
     <strong>effettiva</strong> della spesa, ricavata dalle campagne Meta che portano quel tag.
-    Una dimensione senza target o voci di piano taggate mostra solo l'effettivo.
+    Una dimensione senza voci di piano taggate mostra solo l'effettivo.
   </p>
 
   <div id="dimensions" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6"></div>
@@ -305,15 +304,8 @@ function renderDimensions() {
     const planShare = tags.map((t, i) => dimPlanned ? (plannedAbs[i] / dimPlanned * 100) : null);
 
     const hasPlanLines = dimPlanned > 0;
-    const hasTarget = tags.some(t => t.target_share != null);
 
     const datasets = [];
-    if (hasTarget) {
-      datasets.push({
-        label: "Target", data: tags.map(t => t.target_share ?? null),
-        backgroundColor: C_PLANNED, borderRadius: 2,
-      });
-    }
     if (hasPlanLines) {
       datasets.push({
         label: "Dalle voci di piano", data: planShare, _abs: plannedAbs,
@@ -350,10 +342,6 @@ function renderDimensions() {
       const delta = planned == null ? null : actualShare[i] - planned;
       return `<tr>
         <td><span class="inline-block w-2 h-2 rounded-full mr-1" style="background:${colorOf(t, i)}"></span>${t.name}</td>
-        <td class="text-right">
-          <input type="number" step="0.1" min="0" max="100" class="input input-bordered input-xs w-16 text-right target-input"
-                 data-tag-id="${t.id}" value="${t.target_share ?? ""}" placeholder="—">
-        </td>
         <td class="text-right">${pct1(planShare[i])}</td>
         <td class="text-right">${pct1(actualShare[i])}</td>
         <td class="text-right">${eur(actualAbs[i])}</td>
@@ -361,7 +349,7 @@ function renderDimensions() {
       </tr>`;
     }).join("");
     $(`table-dim-${dim.slug}`).innerHTML =
-      `<thead><tr><th>tag</th><th class="text-right">target</th><th class="text-right">piano</th><th class="text-right">eff.</th><th class="text-right">spesa</th><th class="text-right">delta</th></tr></thead><tbody>${body}</tbody>`;
+      `<thead><tr><th>tag</th><th class="text-right">piano</th><th class="text-right">eff.</th><th class="text-right">spesa</th><th class="text-right">delta</th></tr></thead><tbody>${body}</tbody>`;
   });
 
   $("new-tag-dimension").innerHTML = DATA.dimensions.map(d =>
@@ -455,32 +443,6 @@ function deleteLine(id, label) {
 
 $("btn-reload").onclick = () => load();
 $("f-plan").addEventListener("change", (e) => { planId = e.target.value; load(); });
-
-function csrf() {
-  const m = document.cookie.match(/csrftoken=([^;]+)/);
-  return m ? m[1] : "";
-}
-
-// Delegated because renderDimensions() rebuilds #dimensions on every load(),
-// which would otherwise orphan a listener bound directly to each input.
-$("dimensions").addEventListener("change", async (e) => {
-  const input = e.target.closest(".target-input");
-  if (!input) return;
-  const tagId = input.dataset.tagId;
-  const value = input.value.trim();
-  const r = await fetch(`/pianificazione/tag/${tagId}/target/`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRFToken": csrf() },
-    body: `target_share=${encodeURIComponent(value)}`,
-  });
-  if (!r.ok) { alert("Salvataggio del target non riuscito."); return; }
-  const data = await r.json();
-  for (const dim of DATA.dimensions) {
-    const tag = dim.tags.find(t => String(t.id) === String(tagId));
-    if (tag) tag.target_share = data.target_share;
-  }
-  renderDimensions();
-});
 
 async function load() {
   try {
