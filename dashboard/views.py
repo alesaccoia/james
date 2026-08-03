@@ -1229,16 +1229,21 @@ def data_pianificazione(request):
                 'label': line.label,
                 'stage': line.stage.name if line.stage else None,
                 'stage_slug': line.stage.slug if line.stage else None,
+                'stage_id': line.stage_id,
                 'tags': [{'id': t.pk, 'name': t.name, 'dimension': t.dimension.name,
                           'dimension_slug': t.dimension.slug, 'color': t.color or None}
                          for t in line.tags.all()],
                 'tag_ids': [t.pk for t in line.tags.all()],
                 'percent': line.resolved_percent,
                 'amount': line.resolved_amount,
+                'percent_raw': line.percent,
+                'amount_raw': line.amount,
                 'is_media': line.is_media,
                 'source': line.source.name if line.source else None,
+                'source_id': line.source_id,
                 'actual_spend': spend_by_source.get(line.source_id) if line.source_id else None,
                 'notes': line.notes,
+                'order': line.order,
             })
 
     # Actual spend sliced by tag, resolved per ad through the tagging overlay
@@ -1295,6 +1300,7 @@ def data_pianificazione(request):
                  if plan else None),
         'dimensions': _tag_payload(dimensions),
         'lines': lines,
+        'sources': [{'id': s.pk, 'name': s.name, 'stage': s.stage.name} for s in sources],
         'stages': stages,
         'spend_by_tag': {str(k): v for k, v in spend_by_tag.items()},
         'dimension_totals': dict(dim_totals),
@@ -1303,6 +1309,69 @@ def data_pianificazione(request):
         'tagged_spend_total': tagged_spend_total,
         'untagged_spend': untagged_spend,
     })
+
+
+@login_required
+def budget_line_save(request):
+    """Create or update one budget-plan line from the inline editor on
+    Pianificazione, so tagging a line doesn't require the Django admin."""
+    if request.method != 'POST':
+        return redirect('dashboard:pianificazione')
+
+    plan = BudgetPlan.objects.filter(pk=(request.POST.get('plan') or '').strip()).first()
+    if not plan:
+        messages.error(request, 'Piano non valido.')
+        return redirect('dashboard:pianificazione')
+
+    line_id = (request.POST.get('id') or '').strip()
+    line = BudgetLine.objects.filter(pk=line_id, plan=plan).first() if line_id else BudgetLine(plan=plan)
+
+    label = (request.POST.get('label') or '').strip()
+    if not label:
+        messages.error(request, "La voce deve avere un'etichetta.")
+        return redirect(f"{reverse('dashboard:pianificazione')}?plan={plan.pk}")
+    line.label = label
+
+    stage_id = (request.POST.get('stage') or '').strip()
+    line.stage_id = int(stage_id) if stage_id else None
+
+    source_id = (request.POST.get('source') or '').strip()
+    line.source_id = int(source_id) if source_id else None
+
+    # Percent and amount are alternative ways to size a line; whichever field
+    # was actually filled in wins, the other is cleared so resolved_amount /
+    # resolved_percent don't get confused about which one is authoritative.
+    percent_raw = (request.POST.get('percent') or '').strip()
+    amount_raw = (request.POST.get('amount') or '').strip()
+    if amount_raw:
+        line.amount, line.percent = float(amount_raw), None
+    elif percent_raw:
+        line.percent, line.amount = float(percent_raw), None
+    else:
+        line.percent = line.amount = None
+
+    line.is_media = bool(request.POST.get('is_media'))
+    line.notes = (request.POST.get('notes') or '').strip()[:300]
+    order_raw = (request.POST.get('order') or '').strip()
+    if order_raw:
+        line.order = int(order_raw)
+    line.save()
+    line.tags.set([t for t in request.POST.getlist('tags') if t])
+
+    messages.success(request, f'Voce "{line.label}" salvata.')
+    return redirect(f"{reverse('dashboard:pianificazione')}?plan={plan.pk}")
+
+
+@login_required
+def budget_line_delete(request, pk):
+    if request.method == 'POST':
+        line = BudgetLine.objects.filter(pk=pk).first()
+        if line:
+            plan_id, label = line.plan_id, line.label
+            line.delete()
+            messages.success(request, f'Voce "{label}" eliminata.')
+            return redirect(f"{reverse('dashboard:pianificazione')}?plan={plan_id}")
+    return redirect('dashboard:pianificazione')
 
 
 def _published_post_index():

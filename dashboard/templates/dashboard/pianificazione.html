@@ -11,7 +11,7 @@
   <div class="grow"></div>
   <select id="f-plan" class="select select-bordered select-sm"></select>
   <a href="{% url 'dashboard:piani' %}" class="btn btn-sm btn-outline">Tutti i piani</a>
-  <a href="/admin/dashboard/budgetplan/" class="btn btn-sm btn-outline" target="_blank" rel="noopener">Modifica voci</a>
+  <button class="btn btn-sm btn-primary" onclick="openLineForm()">Aggiungi voce</button>
   <button class="btn btn-sm" id="btn-reload">Ricarica</button>
 </div>
 
@@ -94,6 +94,61 @@
   </div>
 
 </div>
+
+<!-- Modal: new / edit budget line -->
+<dialog id="line-modal" class="modal">
+  <div class="modal-box max-w-2xl">
+    <h3 class="font-bold text-lg mb-3" id="line-modal-title">Nuova voce di piano</h3>
+    <form method="post" action="{% url 'dashboard:budget_line_save' %}" class="flex flex-col gap-3" id="line-form">
+      {% csrf_token %}
+      <input type="hidden" name="id" id="l-id">
+      <input type="hidden" name="plan" id="l-plan">
+      <div class="flex flex-wrap gap-3">
+        <label class="form-control grow">
+          <span class="label-text text-xs">Etichetta</span>
+          <input type="text" name="label" id="l-label" class="input input-bordered input-sm" placeholder="es. Meta Ads - Awareness genitori" required>
+        </label>
+        <label class="form-control">
+          <span class="label-text text-xs">Fase del funnel</span>
+          <select name="stage" id="l-stage" class="select select-bordered select-sm"></select>
+        </label>
+      </div>
+      <div class="flex flex-wrap gap-3">
+        <label class="form-control">
+          <span class="label-text text-xs">% del budget del piano</span>
+          <input type="number" name="percent" id="l-percent" step="0.1" min="0" max="100" class="input input-bordered input-sm w-40">
+        </label>
+        <label class="form-control">
+          <span class="label-text text-xs">oppure importo fisso (€)</span>
+          <input type="number" name="amount" id="l-amount" step="1" min="0" class="input input-bordered input-sm w-40">
+        </label>
+        <label class="form-control">
+          <span class="label-text text-xs">Campagna Meta reale (opzionale)</span>
+          <select name="source" id="l-source" class="select select-bordered select-sm w-64"></select>
+        </label>
+      </div>
+      <label class="label cursor-pointer justify-start gap-2 -mb-1">
+        <input type="checkbox" name="is_media" id="l-is-media" class="checkbox checkbox-sm" checked>
+        <span class="label-text text-xs">È budget media (conta nel 100% del piano; disattiva per effort operativo)</span>
+      </label>
+      <div>
+        <span class="label-text text-xs">Tag</span>
+        <div id="l-tags" class="flex flex-col gap-2 mt-1 max-h-64 overflow-y-auto border border-base-200 rounded-lg p-3"></div>
+      </div>
+      <label class="form-control">
+        <span class="label-text text-xs">Note</span>
+        <input type="text" name="notes" id="l-notes" class="input input-bordered input-sm" maxlength="300">
+      </label>
+      <div class="flex justify-end gap-2 mt-2">
+        <button type="button" class="btn btn-sm" onclick="document.getElementById('line-modal').close()">Annulla</button>
+        <button type="submit" class="btn btn-sm btn-primary">Salva</button>
+      </div>
+    </form>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>chiudi</button></form>
+</dialog>
+
+<form method="post" id="line-delete-form" class="hidden">{% csrf_token %}</form>
 
 <script>const PLAN_CFG = {{ cfg_json|safe }};</script>
 {% verbatim %}
@@ -208,11 +263,15 @@ function renderLinesTable() {
       <td class="text-right">${l.source ? eur(l.actual_spend) : '<span class="opacity-40" title="Nessuna campagna Meta collegata a questa voce">n.c.</span>'}</td>
       <td class="text-right ${delta == null ? "" : (delta > 0 ? "text-error" : "text-success")}">${delta == null ? "—" : (delta > 0 ? "+" : "") + eur(delta)}</td>
       <td class="text-xs opacity-60 max-w-xs truncate" title="${(l.notes || "").replace(/"/g, "&quot;")}">${l.notes || ""}</td>
+      <td class="text-right whitespace-nowrap">
+        <button class="btn btn-ghost btn-xs" onclick="openLineForm(${l.id})">modifica</button>
+        <button class="btn btn-ghost btn-xs text-error" onclick="deleteLine(${l.id}, '${l.label.replace(/'/g, "\\'")}')">elimina</button>
+      </td>
     </tr>`;
   }).join("");
   $("lines-table").innerHTML =
-    `<thead><tr><th>voce</th><th>fase</th><th>tag</th><th class="text-right">%</th><th class="text-right">previsto</th><th class="text-right">speso</th><th class="text-right">delta</th><th>note</th></tr></thead>
-     <tbody>${body || '<tr><td colspan="8" class="opacity-50">nessuna voce in questo piano</td></tr>'}</tbody>`;
+    `<thead><tr><th>voce</th><th>fase</th><th>tag</th><th class="text-right">%</th><th class="text-right">previsto</th><th class="text-right">speso</th><th class="text-right">delta</th><th>note</th><th></th></tr></thead>
+     <tbody>${body || '<tr><td colspan="9" class="opacity-50">nessuna voce in questo piano</td></tr>'}</tbody>`;
 }
 
 function renderDimensions() {
@@ -318,6 +377,68 @@ function renderAll() {
   renderLinesTable();
   renderDimensions();
   renderKPITable();
+}
+
+function openLineForm(lineId) {
+  const line = lineId ? DATA.lines.find(l => l.id === lineId) : null;
+  $("line-modal-title").textContent = line ? `Modifica "${line.label}"` : "Nuova voce di piano";
+  $("l-id").value = line ? line.id : "";
+  $("l-plan").value = DATA.plan ? DATA.plan.id : "";
+  $("l-label").value = line ? line.label : "";
+  $("l-percent").value = (line && line.percent_raw != null) ? line.percent_raw : "";
+  $("l-amount").value = (line && line.amount_raw != null) ? line.amount_raw : "";
+  $("l-is-media").checked = line ? line.is_media : true;
+  $("l-notes").value = line ? (line.notes || "") : "";
+
+  $("l-stage").innerHTML = '<option value="">— nessuna —</option>' +
+    DATA.stages.map(s => `<option value="${s.id}">${s.name}</option>`).join("");
+  $("l-stage").value = (line && line.stage_id) ? String(line.stage_id) : "";
+
+  $("l-source").innerHTML = '<option value="">— nessuna —</option>' +
+    (DATA.sources || []).map(s => `<option value="${s.id}">${s.name} (${s.stage})</option>`).join("");
+  $("l-source").value = (line && line.source_id) ? String(line.source_id) : "";
+
+  const selected = new Set((line ? line.tag_ids : []).map(String));
+  $("l-tags").innerHTML = DATA.dimensions.map(dim => `
+    <div>
+      <div class="text-xs font-semibold opacity-70 mb-1">${dim.name}</div>
+      <div class="flex flex-wrap gap-3">
+        ${dim.allow_multiple ? "" : `<label class="label cursor-pointer gap-1">
+          <input type="radio" name="tags_dim_${dim.slug}" value="" ${[...selected].every(id => !dim.tags.some(t => String(t.id) === id)) ? "checked" : ""}>
+          <span class="label-text text-xs opacity-50">nessuno</span>
+        </label>`}
+        ${dim.tags.map(t => `
+          <label class="label cursor-pointer gap-1">
+            <input type="${dim.allow_multiple ? "checkbox" : "radio"}"
+                   name="${dim.allow_multiple ? "tags" : `tags_dim_${dim.slug}`}"
+                   class="${dim.allow_multiple ? "checkbox checkbox-xs" : "radio radio-xs"}"
+                   value="${t.id}" ${selected.has(String(t.id)) ? "checked" : ""}>
+            <span class="label-text text-xs">${t.name}</span>
+          </label>`).join("")}
+      </div>
+    </div>`).join("");
+
+  $("line-modal").showModal();
+}
+
+// Single-value dimensions use one radio group per dimension (so picking a new
+// value in that dimension deselects the old one); the form still needs every
+// chosen tag under the same "tags" key the view reads, so fold the radios in
+// right before the browser submits.
+$("line-form").addEventListener("submit", () => {
+  document.querySelectorAll('#l-tags input[type=radio]:checked').forEach(r => {
+    if (!r.value) return;
+    const h = document.createElement("input");
+    h.type = "hidden"; h.name = "tags"; h.value = r.value;
+    $("line-form").appendChild(h);
+  });
+});
+
+function deleteLine(id, label) {
+  if (!confirm(`Eliminare la voce "${label}"?`)) return;
+  const f = $("line-delete-form");
+  f.action = `/pianificazione/linea/${id}/elimina/`;
+  f.submit();
 }
 
 $("btn-reload").onclick = () => load();
