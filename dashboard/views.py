@@ -482,6 +482,11 @@ def _build_metrics():
 
 
 @login_required
+def help_page(request):
+    return render(request, 'dashboard/help.html')
+
+
+@login_required
 def compare(request):
     metrics = _build_metrics()
     cfg = {

@@ -26,6 +26,7 @@
     <a href="{% url 'dashboard:compare' %}" class="btn btn-ghost text-xl">James</a>
     {% if user.is_authenticated %}
       <a href="{% url 'dashboard:compare' %}" class="btn btn-sm btn-ghost {% block nav_compare %}{% endblock %}">Confronto</a>
+      <a href="{% url 'dashboard:help' %}" class="btn btn-sm btn-ghost {% block nav_help %}{% endblock %}">Guida</a>
 
       <div class="dropdown dropdown-bottom">
         <div tabindex="0" role="button" class="btn btn-sm btn-ghost {% block nav_group_strategia %}{% endblock %}">

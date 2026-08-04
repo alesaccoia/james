@@ -6,6 +6,7 @@ app_name = 'dashboard'
 
 urlpatterns = [
     path('', views.compare, name='compare'),
+    path('guida/', views.help_page, name='help'),
     path('data/compare.json', views.data_compare, name='data_compare'),
     path('data/compare-presets.json', views.compare_presets, name='compare_presets'),
     path('data/home.json', views.data_home, name='data_home'),
