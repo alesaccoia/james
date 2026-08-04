@@ -1,247 +1,529 @@
 {% extends 'dashboard/base.html' %}
 {% block title %}Guida{% endblock %}
 {% block nav_help %}btn-active{% endblock %}
+
+{% block head_extra %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  /* Everything is scoped under .g so daisyUI's own card/prose rules never
+     collide with these. No element selectors outside the wrapper. */
+  .g {
+    --ink:    #0a1633;
+    --blu:    #0d2a8c;
+    --arancio:#f96a34;
+    --paper:  #f5f6f8;
+    --rule:   #dde1e9;
+    --muted:  #59627a;
+
+    font-family: 'Archivo', system-ui, sans-serif;
+    color: var(--ink);
+    max-width: 62rem;
+    margin-inline: auto;
+  }
+  .g code, .g .g-sys {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: .86em;
+    background: #eceff5;
+    border-radius: 3px;
+    padding: .1em .34em;
+    color: var(--blu);
+  }
+  .g a { color: var(--blu); text-decoration: underline; text-underline-offset: 2px; }
+  .g a:hover { color: var(--arancio); }
+  .g a:focus-visible,
+  .g summary:focus-visible { outline: 2px solid var(--arancio); outline-offset: 2px; border-radius: 2px; }
+
+  /* ---------------------------------------------------------- hero */
+  .g-hero {
+    background: var(--ink);
+    color: #fff;
+    border-radius: 14px;
+    padding: 2.5rem 2rem;
+    display: grid;
+    grid-template-columns: 1.15fr .85fr;
+    gap: 2.5rem;
+    align-items: center;
+    margin-bottom: 3.5rem;
+  }
+  .g-eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .68rem;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--arancio);
+    margin-bottom: 1rem;
+  }
+  .g-hero h1 {
+    font-family: 'Bricolage Grotesque', sans-serif;
+    font-weight: 800;
+    font-size: clamp(1.9rem, 4vw, 2.9rem);
+    line-height: 1.02;
+    letter-spacing: -.025em;
+    margin: 0 0 1rem;
+  }
+  .g-hero p { color: #b9c2d8; font-size: .95rem; line-height: 1.6; margin: 0; max-width: 34ch; }
+  .g-hero figure { margin: 0; }
+  .g-hero figcaption {
+    font-size: .74rem;
+    color: #8e99b5;
+    line-height: 1.5;
+    margin-top: .85rem;
+    text-align: center;
+  }
+  .g-hero svg { width: 100%; height: auto; display: block; }
+
+  /* -------------------------------------------------- concept list */
+  .g-concepts { margin-bottom: 3.5rem; }
+  .g-concepts dl {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 0;
+    margin: 0;
+  }
+  /* Rule above each cell, not below: the last row can be short without
+     leaving a border hanging under an empty column. */
+  .g-concepts div {
+    padding: 1.1rem 1.25rem 1.25rem 0;
+    border-top: 1px solid var(--rule);
+  }
+  .g-concepts dt {
+    font-family: 'Bricolage Grotesque', sans-serif;
+    font-weight: 600;
+    font-size: .96rem;
+    margin-bottom: .3rem;
+  }
+  .g-concepts dd { margin: 0; font-size: .84rem; line-height: 1.55; color: var(--muted); }
+
+  /* ------------------------------------------------ phase + spine */
+  .g-phase { margin-bottom: 3.25rem; }
+  .g-phase-head {
+    display: flex;
+    align-items: baseline;
+    gap: .9rem;
+    padding-bottom: .7rem;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 2rem;
+  }
+  .g-phase-head h2 {
+    font-family: 'Bricolage Grotesque', sans-serif;
+    font-weight: 800;
+    font-size: 1.45rem;
+    letter-spacing: -.02em;
+    margin: 0;
+  }
+  .g-when {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .68rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-left: auto;
+  }
+
+  /* The rail is the signature: solid where setup happens once, dashed and
+     closing into a loop where the work repeats every month. */
+  .g-steps { position: relative; padding-left: 3.5rem; }
+  .g-steps::before {
+    content: "";
+    position: absolute;
+    left: 1.05rem;
+    top: .4rem;
+    bottom: .4rem;
+    width: 2px;
+    background: var(--blu);
+  }
+  .g-steps.is-cycle::before {
+    background: repeating-linear-gradient(var(--arancio) 0 6px, transparent 6px 12px);
+  }
+  .g-loop {
+    position: absolute;
+    left: -.35rem;
+    bottom: -2.9rem;
+    width: 4.6rem;
+    color: var(--arancio);
+  }
+  .g-loop-note {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .68rem;
+    letter-spacing: .06em;
+    color: var(--arancio);
+    padding-left: 3.5rem;
+    margin-top: 1.4rem;
+  }
+
+  .g-step { position: relative; margin-bottom: 2.1rem; }
+  .g-step:last-child { margin-bottom: 0; }
+  .g-step-n {
+    position: absolute;
+    left: -3.5rem;
+    top: -.15rem;
+    width: 2.15rem;
+    height: 2.15rem;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .82rem;
+    background: var(--blu);
+    color: #fff;
+  }
+  .g-steps.is-cycle .g-step-n { background: var(--arancio); }
+  .g-step h3 {
+    font-family: 'Bricolage Grotesque', sans-serif;
+    font-weight: 600;
+    font-size: 1.12rem;
+    letter-spacing: -.012em;
+    margin: 0 0 .5rem;
+  }
+  .g-step p { font-size: .89rem; line-height: 1.62; color: #303a55; margin: 0 0 .6rem; }
+  /* Tailwind's preflight strips list markers globally; put them back here. */
+  .g-step ul { margin: 0 0 .7rem; padding-left: 1.05rem; list-style: disc; }
+  .g-step li::marker { color: var(--arancio); }
+  .g-step li { font-size: .89rem; line-height: 1.58; color: #303a55; margin-bottom: .28rem; }
+  .g-step > :last-child { margin-bottom: 0; }
+
+  .g-note {
+    border-left: 2px solid var(--arancio);
+    background: #fff6f1;
+    padding: .7rem .9rem;
+    font-size: .84rem;
+    line-height: 1.55;
+    border-radius: 0 5px 5px 0;
+  }
+  .g-key {
+    background: #eef1f9;
+    border-radius: 7px;
+    padding: .85rem 1rem;
+    font-size: .87rem;
+    line-height: 1.6;
+  }
+
+  /* ----------------------------------------------------- checklist */
+  .g-check { border-top: 2px solid var(--ink); padding-top: 1.6rem; }
+  .g-check h2 {
+    font-family: 'Bricolage Grotesque', sans-serif;
+    font-weight: 800;
+    font-size: 1.3rem;
+    letter-spacing: -.02em;
+    margin: 0 0 1.1rem;
+  }
+  .g-check ol { margin: 0; padding-left: 1.4rem; list-style: decimal; }
+  .g-check li { font-size: .89rem; line-height: 1.55; margin-bottom: .4rem; color: #303a55; }
+  .g-check li::marker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .8rem;
+    color: var(--blu);
+  }
+
+  @media (max-width: 780px) {
+    .g-hero { grid-template-columns: 1fr; padding: 1.9rem 1.35rem; gap: 1.9rem; }
+    .g-hero p { max-width: none; }
+    .g-steps { padding-left: 2.9rem; }
+    .g-steps::before { left: .78rem; }
+    .g-step-n { left: -2.9rem; width: 1.85rem; height: 1.85rem; font-size: .76rem; }
+    .g-loop { display: none; }
+    .g-loop-note { padding-left: 2.9rem; }
+    .g-when { margin-left: 0; flex-basis: 100%; }
+    .g-phase-head { flex-wrap: wrap; gap: .35rem; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .g a { transition: color .15s ease; }
+  }
+</style>
+{% endblock %}
+
 {% block content %}
+<div class="g">
 
-<div class="mb-6">
-  <h1 class="text-2xl font-bold">Guida: impostare James da zero</h1>
-  <p class="text-sm opacity-60">
-    Un percorso end-to-end, con un esempio concreto, per portare un nuovo cliente da "nessun dato" a un
-    funnel che si popola da solo con dati reali e un piano di budget confrontabile con la spesa.
-  </p>
-</div>
+  <section class="g-hero">
+    <div>
+      <div class="g-eyebrow">Guida all'installazione</div>
+      <h1>Da un database vuoto a un funnel che si popola da solo.</h1>
+      <p>
+        James tiene insieme due letture degli stessi soldi: le fasi che il cliente attraversa e gli assi
+        con cui descrivi ogni euro speso. Impostale in quest'ordine e i numeri arrivano da soli.
+      </p>
+    </div>
 
-<div class="card bg-base-100 shadow mb-6">
-  <div class="card-body">
-    <h2 class="card-title">Prima di tutto: 5 concetti</h2>
-    <p class="text-sm opacity-60">Tutta l'app ruota intorno a questi cinque oggetti. Il resto sono solo modi di combinarli.</p>
-    <div class="grid grid-cols-1 md:grid-cols-5 gap-3 mt-2 text-sm">
-      <div class="p-3 rounded-lg bg-base-200">
-        <div class="font-semibold mb-1">Fase del funnel</div>
-        <div class="opacity-70">Awareness, Consideration, Conversion, CRM… Le tappe del percorso cliente. Fisse, poche, definite in <a href="/admin/dashboard/funnelstage/" class="link" target="_blank" rel="noopener">admin</a>.</div>
+    <figure>
+      <svg viewBox="0 0 400 320" role="img" aria-labelledby="fx-t fx-d">
+        <title id="fx-t">Le fasi del funnel attraversate dalle dimensioni</title>
+        <desc id="fx-d">Un imbuto diviso in quattro fasi sovrapposte — Awareness, Consideration,
+          Conversion, CRM e retention — attraversato verticalmente da tre linee tratteggiate che
+          rappresentano le dimensioni di tag.</desc>
+
+        <polygon points="30,40 300,40 280,100 50,100"   fill="#0a1f6b"/>
+        <polygon points="50,100 280,100 260,160 70,160" fill="#102d8f"/>
+        <polygon points="70,160 260,160 240,220 90,220" fill="#1c3a9e"/>
+        <polygon points="90,220 240,220 220,280 110,280" fill="#2a48ad"/>
+
+        <g stroke="#f96a34" stroke-width="1.3" stroke-dasharray="3 4" opacity=".95">
+          <line x1="125" y1="30" x2="125" y2="292"/>
+          <line x1="165" y1="30" x2="165" y2="292"/>
+          <line x1="205" y1="30" x2="205" y2="292"/>
+        </g>
+
+        <g fill="#fff" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600"
+           text-anchor="middle">
+          <text x="165" y="74">Awareness</text>
+          <text x="165" y="134">Consideration</text>
+          <text x="165" y="194">Conversion</text>
+          <text x="165" y="254">CRM e retention</text>
+        </g>
+
+        <g stroke="#4d5876" stroke-width="1">
+          <line x1="292" y1="70"  x2="306" y2="70"/>
+          <line x1="272" y1="130" x2="306" y2="130"/>
+          <line x1="252" y1="190" x2="306" y2="190"/>
+          <line x1="232" y1="250" x2="306" y2="250"/>
+        </g>
+        <g fill="#b9c2d8" font-family="Archivo, sans-serif" font-size="9.5">
+          <text x="312" y="73">farsi conoscere</text>
+          <text x="312" y="133">generare lead</text>
+          <text x="312" y="193">far pagare</text>
+          <text x="312" y="253">far tornare</text>
+        </g>
+      </svg>
+      <figcaption>
+        Le fasi scendono. Le dimensioni — Audience, Pilastro creativo, Bisogno — le tagliano tutte.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section class="g-concepts">
+    <dl>
+      <div>
+        <dt>Fase del funnel</dt>
+        <dd>Una tappa del percorso cliente. Poche, fisse, in ordine.</dd>
       </div>
-      <div class="p-3 rounded-lg bg-base-200">
-        <div class="font-semibold mb-1">Dimensione &amp; tag</div>
-        <div class="opacity-70">Un asse di lettura trasversale alle fasi: Audience, Pilastro creativo, Bisogno… Ogni dimensione ha dei tag (i suoi valori possibili).</div>
+      <div>
+        <dt>Dimensione e tag</dt>
+        <dd>Un asse trasversale alle fasi e i suoi valori possibili.</dd>
       </div>
-      <div class="p-3 rounded-lg bg-base-200">
-        <div class="font-semibold mb-1">KPI</div>
-        <div class="opacity-70">Una metrica assegnata a una fase. Può essere manuale o calcolata da soli da un dato reale (Meta, GA4, CRM).</div>
+      <div>
+        <dt>KPI</dt>
+        <dd>Una metrica appesa a una fase, calcolata da un dato reale.</dd>
       </div>
-      <div class="p-3 rounded-lg bg-base-200">
-        <div class="font-semibold mb-1">Piano &amp; voci di piano</div>
-        <div class="opacity-70">Un piano è un periodo (di solito un mese) con un budget totale. Le voci sono le fette di quel budget, ciascuna con una fase e dei tag.</div>
+      <div>
+        <dt>Piano e voci</dt>
+        <dd>Un mese col suo budget, diviso in fette con fase e tag.</dd>
       </div>
-      <div class="p-3 rounded-lg bg-base-200">
-        <div class="font-semibold mb-1">Contenuto editoriale</div>
-        <div class="opacity-70">Un post organico pianificato o pubblicato. Condiviso fra Calendario e Tagging: è lo stesso record.</div>
+      <div>
+        <dt>Contenuto</dt>
+        <dd>Un post organico. Stesso record fra Calendario e Tagging.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="g-phase">
+    <div class="g-phase-head">
+      <h2>Fondamenta</h2>
+      <span class="g-when">una volta per cliente</span>
+    </div>
+
+    <div class="g-steps">
+      <div class="g-step">
+        <div class="g-step-n">1</div>
+        <h3>Definisci le fasi del funnel</h3>
+        <p>
+          Da <a href="/admin/dashboard/funnelstage/" target="_blank" rel="noopener">admin → Funnel
+          stages</a>, crea le tappe del percorso cliente. Per un cliente tipo bastano quattro:
+          Awareness, Consideration, Conversion, CRM e retention.
+        </p>
+        <p>
+          Ogni fase ha uno <code>slug</code> — per esempio <code>awareness</code> — che l'app usa
+          ovunque per riconoscerla. Scegli bene: cambiarlo dopo rompe i collegamenti.
+        </p>
+      </div>
+
+      <div class="g-step">
+        <div class="g-step-n">2</div>
+        <h3>Crea le dimensioni e i primi tag</h3>
+        <p>
+          Una dimensione è un asse — «a chi parliamo» — e i tag sono i suoi valori: Genitori,
+          Studenti. Le dimensioni si creano dall'<a href="/admin/dashboard/tagdimension/"
+          target="_blank" rel="noopener">admin</a>, i tag anche al volo da
+          <a href="{% url 'dashboard:pianificazione' %}">Pianificazione</a>, in fondo alla pagina.
+        </p>
+        <p>
+          Spunta <code>allow_multiple</code> quando una cosa può portare più valori insieme di quella
+          dimensione — un post che è sia Feel sia Do. È l'interruttore che decide se nei form vedi
+          pallini (un valore solo) o caselle (più valori).
+        </p>
+        <div class="g-note">
+          Per partire dalla tassonomia Mentor già pronta invece che da zero, lancia
+          <span class="g-sys">manage.py seed_marketing_plan</span>.
+        </div>
+      </div>
+
+      <div class="g-step">
+        <div class="g-step-n">3</div>
+        <h3>Collega i KPI ai dati reali</h3>
+        <p>
+          Da <a href="/admin/dashboard/funnelkpi/" target="_blank" rel="noopener">admin → Funnel
+          KPIs</a> ogni KPI appartiene a una fase e dichiara da dove prende il numero:
+        </p>
+        <ul>
+          <li><strong>paid</strong> — dalle campagne Meta a pagamento: spesa, impression, click, lead.</li>
+          <li><strong>organic</strong> — dai post Facebook e Instagram: reach, interazioni, pubblicati.</li>
+          <li><strong>wundt</strong> — dal CRM: lead, appuntamenti, clienti.</li>
+          <li><strong>manuale</strong> — nessun collegamento, il numero lo scrivi tu. Usalo solo se davvero non esiste un dato.</li>
+        </ul>
+        <p>
+          Per le sorgenti automatiche imposti anche <code>metric</code> (quale numero prendere),
+          <code>entity_level</code> (a che livello cercare il tag: campagna, ad set o ad) e
+          <code>aggregation</code>. Su un CPL o un CTR usa <code>ratio</code>: ricalcola spesa diviso
+          lead sull'intero periodo, invece di fare la media di percentuali già divise, che darebbe un
+          numero sbagliato.
+        </p>
+        <div class="g-note">
+          <span class="g-sys">manage.py seed_kpi_metrics</span> collega da solo i KPI standard quando i
+          nomi corrispondono. Aggiungi <span class="g-sys">--force</span> per sovrascrivere anche
+          quelli già configurati a mano.
+        </div>
       </div>
     </div>
-  </div>
-</div>
+  </section>
 
-<div class="divider">Esempio guida: un nuovo cliente, "Acme Ripetizioni"</div>
-
-<div class="card bg-base-100 shadow mb-4">
-  <div class="card-body">
-    <h2 class="card-title"><span class="badge badge-primary badge-lg">1</span> Le fasi del funnel</h2>
-    <p class="text-sm opacity-60">
-      Dall'<a href="/admin/dashboard/funnelstage/" class="link" target="_blank" rel="noopener">admin → Funnel stages</a>,
-      crea le tappe del percorso cliente. Per Acme partiamo con quattro, in ordine:
-    </p>
-    <ul class="list-disc list-inside text-sm mt-1 space-y-0.5">
-      <li><strong>Awareness</strong> — farsi conoscere</li>
-      <li><strong>Consideration</strong> — generare lead</li>
-      <li><strong>Conversion</strong> — trasformare il lead in cliente pagante</li>
-      <li><strong>CRM e retention</strong> — riattivazione e referral</li>
-    </ul>
-    <p class="text-sm opacity-60 mt-2">
-      Ogni fase ha uno <code>slug</code> (es. <code>awareness</code>) usato ovunque nell'app per riconoscerla: non cambiarlo dopo averlo scelto.
-    </p>
-  </div>
-</div>
-
-<div class="card bg-base-100 shadow mb-4">
-  <div class="card-body">
-    <h2 class="card-title"><span class="badge badge-primary badge-lg">2</span> Le dimensioni e i tag</h2>
-    <p class="text-sm opacity-60">
-      Una dimensione è un asse (es. "a chi parliamo"), i tag sono i suoi valori (es. "Genitori", "Studenti"). Si creano al volo dalla pagina
-      <a href="{% url 'dashboard:pianificazione' %}" class="link">Pianificazione</a>, sezione "Aggiungi un tag" — ma la dimensione stessa
-      (nome, se accetta più valori insieme) si crea dall'<a href="/admin/dashboard/tagdimension/" class="link" target="_blank" rel="noopener">admin</a>.
-    </p>
-    <p class="text-sm opacity-60 mt-2">Per Acme creiamo due dimensioni:</p>
-    <ul class="list-disc list-inside text-sm mt-1 space-y-0.5">
-      <li><strong>Audience</strong> (un solo valore per campagna) → tag <em>Genitori</em>, <em>Studenti</em></li>
-      <li><strong>Pilastro creativo</strong> (un solo valore) → tag <em>Awareness culturale</em>, <em>Metodo</em>, <em>Testimonianze</em>, <em>Offerta diretta</em></li>
-    </ul>
-    <p class="text-sm opacity-60 mt-2">
-      Se una dimensione può avere più valori insieme sulla stessa cosa (es. "Think · Feel · Do", dove un post può essere insieme Feel e Do),
-      spunta <code>allow_multiple</code> in admin: cambia se nella board di Tagging e nell'editor delle voci di piano vedi radio (un solo
-      valore) o checkbox (più valori).
-    </p>
-    <div class="alert mt-3 text-sm">
-      <span>Scorciatoia: <code>manage.py seed_marketing_plan</code> crea in un colpo solo tutte le dimensioni/tag della strategia Mentor
-      del 24 luglio, se vuoi partire da quella tassonomia invece che da zero.</span>
+  <section class="g-phase">
+    <div class="g-phase-head">
+      <h2>Il ciclo</h2>
+      <span class="g-when">ogni mese, per sempre</span>
     </div>
-  </div>
-</div>
 
-<div class="card bg-base-100 shadow mb-4">
-  <div class="card-body">
-    <h2 class="card-title"><span class="badge badge-primary badge-lg">3</span> I KPI, e farli popolare da soli</h2>
-    <p class="text-sm opacity-60">
-      Dall'<a href="/admin/dashboard/funnelkpi/" class="link" target="_blank" rel="noopener">admin → Funnel KPIs</a>, ogni KPI appartiene
-      a una fase e ha una "sorgente":
-    </p>
-    <ul class="list-disc list-inside text-sm mt-1 space-y-0.5">
-      <li><strong>manuale</strong> — nessun collegamento, il numero lo scrivi tu (raro, usalo solo se davvero non c'è un dato).</li>
-      <li><strong>paid</strong> — calcolato dalle campagne Meta a pagamento (fb_ads_insights): spesa, impression, click, lead…</li>
-      <li><strong>organic</strong> — calcolato dai post organici Facebook/Instagram: reach, interazioni, post pubblicati…</li>
-      <li><strong>wundt</strong> — calcolato dal CRM (lead, clienti, appuntamenti).</li>
-    </ul>
-    <p class="text-sm opacity-60 mt-2">
-      Per una sorgente non manuale imposti anche <code>metric</code> (quale numero prendere), <code>aggregation</code>
-      (somma, media, o rapporto tra due numeri — usa "ratio" per un CPL o un CTR, mai una media di percentuali già calcolate),
-      e <code>entity_level</code> (campagna, ad set o ad — cioè a che livello va cercato il tag/fase assegnato).
-    </p>
-    <p class="text-sm opacity-60 mt-2">
-      Esempio per Acme, fase Awareness: KPI "Reach nel target" → source <code>paid</code>, metric <code>reach</code>,
-      aggregation <code>sum</code>. KPI "CPL" in Consideration → source <code>paid</code>, metric <code>cpl</code>,
-      aggregation <code>ratio</code> (spesa / lead, ricalcolato sul periodo — mai la media dei CPL giornalieri).
-    </p>
-    <div class="alert mt-3 text-sm">
-      <span><code>manage.py seed_kpi_metrics</code> collega automaticamente i KPI standard (CPL, lead, reach, impression…) alle
-      metriche giuste, se i nomi dei KPI corrispondono a quelli della strategia Mentor. Usa <code>--force</code> per
-      sovrascrivere anche quelli già configurati a mano.</span>
+    <div class="g-steps is-cycle">
+      <div class="g-step">
+        <div class="g-step-n">4</div>
+        <h3>Tagga quello che è uscito</h3>
+        <p>
+          In <a href="{% url 'dashboard:tagging' %}">Tagging e fasi</a> assegni a ogni campagna, ad set,
+          ad e post reale la sua fase e i suoi tag. È il punto in cui i dati di Meta incontrano la
+          strategia: finché una campagna non è taggata, la sua spesa resta fuori da ogni quota.
+        </p>
+        <ul>
+          <li>Trascina una scheda sulla colonna della fase giusta.</li>
+          <li>I tag scendono lungo la gerarchia <strong>campagna → ad set → ad</strong>, una dimensione
+            alla volta. Tagga la campagna una volta e tutto quello che ci gira sotto eredita; se poi
+            specifichi un valore diverso su un singolo ad set, quello vince solo su quella dimensione.</li>
+          <li>Trascina una scheda sopra una già taggata per copiarne fase e tag.</li>
+          <li>I post organici che tagghi qui sono lo stesso record del
+            <a href="{% url 'dashboard:calendario' %}">Calendario editoriale</a>: li modifichi da una
+            parte e cambiano dall'altra.</li>
+        </ul>
+      </div>
+
+      <div class="g-step">
+        <div class="g-step-n">5</div>
+        <h3>Apri il piano del mese</h3>
+        <p>
+          Da <a href="{% url 'dashboard:piani' %}">Piani budget</a>, «Nuovo piano»: scegli il mese e il
+          budget media del periodo. Il nome si genera da solo se lo lasci vuoto.
+        </p>
+        <p>
+          Puoi anche aprire un piano su un mese passato, per rileggere a posteriori come è andata
+          taggando ora le campagne vecchie. Oppure duplicare un piano esistente: struttura e tag si
+          copiano, e gli importi fissi si riproporzionano se il budget del nuovo mese è diverso.
+        </p>
+      </div>
+
+      <div class="g-step">
+        <div class="g-step-n">6</div>
+        <h3>Scrivi le voci di piano</h3>
+        <p>
+          Da <a href="{% url 'dashboard:pianificazione' %}">Pianificazione e tag</a>, «Aggiungi voce».
+          Ogni voce è una fetta di budget: un'etichetta, una fase, i tag, una percentuale del piano
+          oppure un importo fisso, e volendo il collegamento a una campagna Meta reale — che è quello
+          che fa comparire lo speso accanto al previsto.
+        </p>
+        <div class="g-key">
+          <strong>La regola che conta.</strong> Una voce porta tag di più dimensioni insieme, e il suo
+          importo conta per intero su ognuna: taggarla «Genitori» e «Metodo» la mette al 100% su
+          entrambi gli assi. Si divide solo fra tag della <em>stessa</em> dimensione — «Genitori» più
+          «Studenti» sulla stessa voce fa metà e metà.
+        </div>
+        <p style="margin-top:.7rem">
+          Per pianificare uno split preciso su un asse — 25/25/20/15/10/5 sui pilastri creativi —
+          scrivilo come voci con quelle proporzioni. Il piano <em>è</em> la pianificazione: non c'è un
+          secondo numero da tenere allineato a mano.
+        </p>
+      </div>
+
+      <div class="g-step">
+        <div class="g-step-n">7</div>
+        <h3>Pianifica i contenuti organici</h3>
+        <p>
+          Nel <a href="{% url 'dashboard:calendario' %}">Calendario editoriale</a> programmi i post:
+          titolo, canale, formato, data e stato, da idea fino a pubblicato. Le cadenze per canale —
+          quanti post a settimana o al mese — si impostano dall'<a
+          href="/admin/dashboard/channelcadence/" target="_blank" rel="noopener">admin</a>.
+        </p>
+      </div>
+
+      <svg class="g-loop" viewBox="0 0 74 52" fill="none" aria-hidden="true">
+        <path d="M18 0 v22 a16 16 0 0 0 16 16 h26" stroke="currentColor" stroke-width="2"
+              stroke-dasharray="6 6" stroke-linecap="round"/>
+        <path d="M54 33 l7 5 -7 5" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
     </div>
-    <p class="text-sm opacity-60 mt-2">
-      Il risultato si legge nella pagina <a href="{% url 'dashboard:funnel' %}" class="link">Funnel</a>: ogni fase con i suoi KPI,
-      calcolati da soli man mano che arrivano dati nuovi da Meta/GA4/CRM.
-    </p>
-  </div>
-</div>
+    <div class="g-loop-note">e il mese dopo si ricomincia da 4</div>
+  </section>
 
-<div class="card bg-base-100 shadow mb-4">
-  <div class="card-body">
-    <h2 class="card-title"><span class="badge badge-primary badge-lg">4</span> Taggare campagne, ad set e post reali</h2>
-    <p class="text-sm opacity-60">
-      Nella pagina <a href="{% url 'dashboard:tagging' %}" class="link">Tagging e fasi</a> assegni, a ogni campagna/ad
-      set/ad/post organico reale, una fase del funnel e i tag delle dimensioni che hai creato. È il punto in cui i dati
-      di Meta incontrano la tua strategia.
-    </p>
-    <ul class="list-disc list-inside text-sm mt-1 space-y-1">
-      <li>La board è drag &amp; drop: trascina una campagna sulla colonna della fase giusta.</li>
-      <li>I tag si ereditano lungo la gerarchia <strong>campagna → ad set → ad</strong>: tagga la campagna una volta, tutti i
-        suoi ad set/ad ereditano automaticamente, dimensione per dimensione. Puoi comunque specificare un valore diverso
-        su un ad set/ad singolo, che vince solo su quella dimensione lì.</li>
-      <li>Trascinare una scheda sopra una scheda già taggata ne clona fase e tag — utile per tante campagne simili.</li>
-      <li>I post organici (Facebook/Instagram) taggati qui sono lo stesso record che vedi nel
-        <a href="{% url 'dashboard:calendario' %}" class="link">Calendario editoriale</a>: modificarli da una pagina si
-        riflette nell'altra.</li>
-    </ul>
-  </div>
-</div>
+  <section class="g-phase">
+    <div class="g-phase-head">
+      <h2>Leggere</h2>
+      <span class="g-when">quando serve una risposta</span>
+    </div>
 
-<div class="card bg-base-100 shadow mb-4">
-  <div class="card-body">
-    <h2 class="card-title"><span class="badge badge-primary badge-lg">5</span> Creare un piano di budget</h2>
-    <p class="text-sm opacity-60">
-      Dalla pagina <a href="{% url 'dashboard:piani' %}" class="link">Piani budget</a>, "Nuovo piano": scegli il mese,
-      un nome (opzionale, si genera da solo dal mese) e il budget media totale del periodo in euro.
-    </p>
-    <p class="text-sm opacity-60 mt-2">
-      Puoi anche creare un piano per un mese <em>passato</em> — utile per rileggere a posteriori come è stato speso il
-      budget, taggando ora le campagne vecchie — oppure duplicare un piano esistente su un altro mese: la struttura
-      (fasi, tag, voci) si copia, gli importi fissi si ricalcolano in proporzione se il budget del nuovo mese è diverso.
-    </p>
-  </div>
-</div>
+    <div class="g-steps">
+      <div class="g-step">
+        <div class="g-step-n">8</div>
+        <h3>Allocazione per tag</h3>
+        <p>
+          In fondo a <a href="{% url 'dashboard:pianificazione' %}">Pianificazione</a>, ogni dimensione
+          mette due barre a confronto per ciascun tag: <strong>dalle voci di piano</strong>, cioè quanto
+          hai pianificato, e <strong>quota effettiva</strong>, cioè quanto è stato speso davvero dalle
+          campagne taggate.
+        </p>
+        <p>
+          Se vedi solo la barra dell'effettivo, non è un errore: significa che su quell'asse non hai
+          ancora taggato nessuna voce di piano. Ogni dimensione ha il proprio denominatore, quindi le
+          percentuali di un asse non dipendono da quanto è taggato sugli altri.
+        </p>
+      </div>
 
-<div class="card bg-base-100 shadow mb-4">
-  <div class="card-body">
-    <h2 class="card-title"><span class="badge badge-primary badge-lg">6</span> Le voci di piano</h2>
-    <p class="text-sm opacity-60">
-      Da <a href="{% url 'dashboard:pianificazione' %}" class="link">Pianificazione e tag</a>, "Aggiungi voce": ogni voce è
-      una fetta di budget con un'etichetta, una fase, dei tag (uno per dimensione, o più se la dimensione lo permette),
-      una % del piano <em>oppure</em> un importo fisso in euro, e opzionalmente il collegamento a una campagna Meta reale
-      (così lo "speso" si confronta automaticamente col previsto).
-    </p>
-    <p class="text-sm opacity-60 mt-2">
-      Punto chiave: <strong>una voce può portare tag di più dimensioni insieme</strong>. Se tagghi la stessa voce con
-      "Genitori" (Audience) e "Metodo" (Pilastro creativo), il suo importo conta per intero su entrambi gli assi — non
-      si divide tra dimensioni diverse. Si divide solo se metti <em>due tag della stessa dimensione</em> sulla stessa
-      voce (es. "Genitori" + "Studenti" insieme): in quel caso l'importo si spacca a metà tra i due.
-    </p>
-    <p class="text-sm opacity-60 mt-2">
-      Esempio Acme: voce "Awareness — genitori", fase Awareness, 20% del piano, tag Audience: Genitori, tag Pilastro
-      creativo: Awareness culturale. Un'unica voce, due assi pianificati insieme.
-    </p>
-  </div>
-</div>
+      <div class="g-step">
+        <div class="g-step-n">9</div>
+        <h3>Funnel, Confronto e home</h3>
+        <p>
+          Il <a href="{% url 'dashboard:funnel' %}">Funnel</a> mostra fase per fase i KPI che hai
+          collegato al passo 3, aggiornati da soli man mano che arrivano dati.
+        </p>
+        <p>
+          La <a href="{% url 'dashboard:compare' %}">home</a> tiene sempre sott'occhio traffico del
+          sito, costo per lead, andamento giornaliero per campagna e stato del piano editoriale. Più
+          sotto puoi confrontare metriche e periodi a piacere, salvare le combinazioni che usi spesso
+          come preset e ritrovare l'ultima configurazione al rientro.
+        </p>
+      </div>
+    </div>
+  </section>
 
-<div class="card bg-base-100 shadow mb-4">
-  <div class="card-body">
-    <h2 class="card-title"><span class="badge badge-primary badge-lg">7</span> Leggere l'allocazione per tag</h2>
-    <p class="text-sm opacity-60">
-      Sempre in Pianificazione, sotto "Allocazione per tag", ogni dimensione ha un grafico con due barre per tag:
-    </p>
-    <ul class="list-disc list-inside text-sm mt-1 space-y-0.5">
-      <li><strong>Dalle voci di piano</strong> — quanto hai effettivamente pianificato, ricavato dalle voci che hai taggato.</li>
-      <li><strong>Quota effettiva (spesa)</strong> — quanto è stato speso davvero, ricavato dalle campagne Meta reali taggate
-        nella pagina Tagging (stessa logica di ereditarietà campagna → ad set → ad).</li>
-    </ul>
-    <p class="text-sm opacity-60 mt-2">
-      Se non hai ancora tagg­ato nessuna voce di piano per una dimensione, vedi solo l'effettivo — non è un bug, è che
-      non c'è ancora un piano per quell'asse. Per pianificare uno split preciso (es. 25/25/20/15/10/5 su un pilastro
-      creativo), traducilo in voci di piano taggate con quelle proporzioni: il piano stesso <em>è</em> la pianificazione,
-      non serve un numero a parte da tenere allineato a mano.
-    </p>
-  </div>
-</div>
-
-<div class="card bg-base-100 shadow mb-4">
-  <div class="card-body">
-    <h2 class="card-title"><span class="badge badge-primary badge-lg">8</span> Calendario editoriale</h2>
-    <p class="text-sm opacity-60">
-      In <a href="{% url 'dashboard:calendario' %}" class="link">Calendario editoriale</a> pianifichi i contenuti organici:
-      titolo, canale, formato, data, stato (idea → brief → produzione → pronto → pubblicato). Le cadenze per canale
-      (quanti post a settimana/mese) si impostano dall'<a href="/admin/dashboard/channelcadence/" class="link" target="_blank" rel="noopener">admin</a>.
-    </p>
-    <p class="text-sm opacity-60 mt-2">
-      Quando un contenuto pianificato qui viene davvero pubblicato su Facebook/Instagram, taggalo (fase + dimensioni)
-      dalla pagina Tagging — è lo stesso record, quindi lo stato e i tag restano coerenti ovunque.
-    </p>
-  </div>
-</div>
-
-<div class="card bg-base-100 shadow mb-6">
-  <div class="card-body">
-    <h2 class="card-title"><span class="badge badge-primary badge-lg">9</span> Confronto e Home</h2>
-    <p class="text-sm opacity-60">
-      La <a href="{% url 'dashboard:compare' %}" class="link">home / Confronto</a> è il punto di ingresso: mostra sempre
-      il traffico del sito, il costo per lead, l'andamento giornaliero per campagna e lo stato del piano editoriale.
-      Più sotto, la sezione "Confronto tra fonti" permette di mettere a paragone metriche/periodi a piacere — le
-      combinazioni che usi spesso si salvano come preset (nome, salva, richiama, elimina), e l'ultima configurazione
-      usata si ricorda da sola al prossimo accesso.
-    </p>
-  </div>
-</div>
-
-<div class="divider">Checklist per un cliente nuovo</div>
-
-<div class="card bg-base-100 shadow">
-  <div class="card-body">
-    <ol class="list-decimal list-inside text-sm space-y-1">
-      <li>Collega le sorgenti dati (Meta Ads, Facebook Page, Instagram, GA4, CRM) via Airbyte — una tantum, richiede credenziali.</li>
-      <li>Crea le fasi del funnel in admin.</li>
-      <li>Crea le dimensioni e i primi tag (admin per le dimensioni, "Aggiungi un tag" per i valori).</li>
-      <li>Collega i KPI alle metriche reali in admin (o lancia <code>seed_kpi_metrics</code> se i nomi combaciano).</li>
-      <li>Tagga fase e dimensioni sulle campagne/ad set/post reali già esistenti, nella pagina Tagging.</li>
-      <li>Crea il primo piano del mese in corso, con il budget totale.</li>
-      <li>Aggiungi le voci di piano, taggandole su tutte le dimensioni rilevanti.</li>
-      <li>Controlla Funnel e Pianificazione: i numeri dovrebbero iniziare a popolarsi da soli.</li>
+  <section class="g-check">
+    <h2>Checklist per un cliente nuovo</h2>
+    <ol>
+      <li>Collega le sorgenti dati via Airbyte: Meta Ads, pagina Facebook, Instagram, GA4, CRM.</li>
+      <li>Crea le fasi del funnel.</li>
+      <li>Crea le dimensioni e i primi tag.</li>
+      <li>Collega i KPI alle metriche reali.</li>
+      <li>Tagga le campagne e i post già usciti.</li>
+      <li>Apri il piano del mese in corso col suo budget.</li>
+      <li>Scrivi le voci di piano, taggandole su tutte le dimensioni che ti servono.</li>
+      <li>Apri Funnel e Pianificazione: i numeri devono iniziare a comparire da soli.</li>
     </ol>
-  </div>
-</div>
+  </section>
 
+</div>
 {% endblock %}
