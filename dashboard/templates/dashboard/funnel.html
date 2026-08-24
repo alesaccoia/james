@@ -271,8 +271,8 @@ function renderChart() {
     options: {
       maintainAspectRatio: false,
       scales: {
-        x: { grid: { color: "#e5e7eb" } },
-        y: { grid: { color: "#e5e7eb" }, ticks: { callback: v => mode === "norm" ? v + "%" : fmtN.format(v) } },
+        x: { grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 } },
+        y: { grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 }, ticks: { callback: v => mode === "norm" ? v + "%" : fmtN.format(v) } },
       },
       plugins: {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },

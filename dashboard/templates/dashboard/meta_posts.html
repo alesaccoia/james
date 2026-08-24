@@ -155,7 +155,7 @@ function renderChart() {
     data: { labels: buckets, datasets },
     options: {
       maintainAspectRatio: false,
-      scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, grid: { color: "#e5e7eb" }, beginAtZero: true, ticks: { precision: 0 } } },
+      scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 }, beginAtZero: true, ticks: { precision: 0 } } },
       plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } } },
     },
   });

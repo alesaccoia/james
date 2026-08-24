@@ -292,8 +292,8 @@ function renderChart() {
     options: {
       maintainAspectRatio: false,
       scales: {
-        x: { grid: { color: "#e5e7eb" } },
-        y: { grid: { color: "#e5e7eb" }, ticks: { callback: v => mode === "norm" ? v + "%" : fmtN.format(v) } },
+        x: { grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 } },
+        y: { grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 }, ticks: { callback: v => mode === "norm" ? v + "%" : fmtN.format(v) } },
       },
       plugins: {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
@@ -416,7 +416,7 @@ function renderHomeAnalytics() {
     options: {
       maintainAspectRatio: false,
       scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
-                y: { beginAtZero: true, grid: { color: "#e5e7eb" } } },
+                y: { beginAtZero: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 } } },
       plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 12 } } },
     },
   });
@@ -440,7 +440,7 @@ function renderHomeCpl() {
     options: {
       maintainAspectRatio: false,
       scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
-                y: { beginAtZero: true, grid: { color: "#e5e7eb" },
+                y: { beginAtZero: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 },
                      ticks: { callback: v => fmtEUR.format(v) } } },
       plugins: {
         legend: { display: false },
@@ -486,7 +486,7 @@ function renderHomeCampaigns() {
       maintainAspectRatio: false,
       scales: {
         x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 10 } },
-        y: { stacked: true, beginAtZero: true, grid: { color: "#e5e7eb" },
+        y: { stacked: true, beginAtZero: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 },
              ticks: { callback: v => homeCampMetric === "spend" ? fmtEUR.format(v) : fmt(v) } },
       },
       plugins: {
@@ -508,7 +508,11 @@ function renderHomeConversionRate() {
     grouped[bucket].leads += row.leads;
     grouped[bucket].customers += row.customers;
   });
-  const labels = Object.keys(grouped).sort();
+  const rawDates = rows.map(row => row.date).sort();
+  const rangeStart = period === "custom" ? customStart :
+    (period === "all" ? (rawDates[0] || todayStr()) : daysAgo(period));
+  const rangeEnd = period === "custom" ? customEnd : todayStr();
+  const labels = continuousBuckets(rangeStart, groupBy, rangeEnd);
   const leads = rows.reduce((sum, row) => sum + row.leads, 0);
   const customers = rows.reduce((sum, row) => sum + row.customers, 0);
   const rate = leads ? customers / leads * 100 : null;
@@ -521,19 +525,19 @@ function renderHomeConversionRate() {
       labels,
       datasets: [{
         label: "Lead diventati clienti",
-        data: labels.map(label => grouped[label].leads ?
-          grouped[label].customers / grouped[label].leads * 100 : null),
-        _leads: labels.map(label => grouped[label].leads),
-        _customers: labels.map(label => grouped[label].customers),
+        data: labels.map(label => grouped[label]?.leads ?
+          grouped[label].customers / grouped[label].leads * 100 : 0),
+        _leads: labels.map(label => grouped[label]?.leads || 0),
+        _customers: labels.map(label => grouped[label]?.customers || 0),
         borderColor: PALETTE[2], backgroundColor: PALETTE[2],
-        borderWidth: 2, pointRadius: 3, tension: .25, spanGaps: true,
+        borderWidth: 2, pointRadius: 2, tension: .25, spanGaps: false,
       }],
     },
     options: {
       maintainAspectRatio: false,
       scales: {
         x: { grid: { display: false }, ticks: { maxTicksLimit: 10 } },
-        y: { beginAtZero: true, suggestedMax: 100, grid: { color: "#e5e7eb" },
+        y: { beginAtZero: true, suggestedMax: 100, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 },
              ticks: { callback: value => value + "%" } },
       },
       plugins: {

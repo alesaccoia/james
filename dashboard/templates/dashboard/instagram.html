@@ -184,10 +184,10 @@ function renderChart() {
     options: {
       maintainAspectRatio: false,
       scales: normalize
-        ? { x: { grid: { display: false } }, y: { beginAtZero: true, max: 100, grid: { color: "#e5e7eb" }, ticks: { callback: v => v + "%" } } }
+        ? { x: { grid: { display: false } }, y: { beginAtZero: true, max: 100, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 }, ticks: { callback: v => v + "%" } } }
         : {
             x: { grid: { display: false } },
-            y: { position: "left", beginAtZero: true, grid: { color: "#e5e7eb" } },
+            y: { position: "left", beginAtZero: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 } },
             y1: { position: "right", beginAtZero: true, grid: { display: false }, ticks: { callback: v => v + "%" } },
           },
       plugins: {

@@ -237,7 +237,7 @@ function renderStagesChart() {
       maintainAspectRatio: false,
       scales: {
         x: { grid: { display: false } },
-        y: { beginAtZero: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => fmtEUR.format(v) } },
+        y: { beginAtZero: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 }, ticks: { callback: v => fmtEUR.format(v) } },
       },
       plugins: {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } },
@@ -324,7 +324,7 @@ function renderDimensions() {
         indexAxis: "y",
         maintainAspectRatio: false,
         scales: {
-          x: { beginAtZero: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => v + "%" } },
+          x: { beginAtZero: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 }, ticks: { callback: v => v + "%" } },
           y: { grid: { display: false }, ticks: { font: { size: 10 } } },
         },
         plugins: {

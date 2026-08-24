@@ -248,7 +248,7 @@ function renderOverviewChart() {
     },
     options: {
       maintainAspectRatio: false,
-      scales: { x: { grid: { color: "#e5e7eb" } }, y: { grid: { color: "#e5e7eb" }, beginAtZero: true } },
+      scales: { x: { grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 } }, y: { grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 }, beginAtZero: true } },
       plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 14 } }, ...annotationPlugin(labels) },
     },
   });
@@ -272,8 +272,8 @@ function renderEngagementChart() {
     options: {
       maintainAspectRatio: false,
       scales: {
-        x: { grid: { color: "#e5e7eb" } },
-        y: { position: "left", beginAtZero: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => v + "%" } },
+        x: { grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 } },
+        y: { position: "left", beginAtZero: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 }, ticks: { callback: v => v + "%" } },
         y1: { position: "right", beginAtZero: true, grid: { display: false }, ticks: { callback: v => fmtSecs(v) } },
       },
       plugins: {
@@ -358,7 +358,7 @@ function renderChannelsChart() {
       maintainAspectRatio: false,
       scales: {
         x: { stacked: true, grid: { display: false } },
-        y: { stacked: true, grid: { color: "#e5e7eb" }, ticks: { callback: v => isShare ? v + "%" : fmtN.format(v) } },
+        y: { stacked: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 }, ticks: { callback: v => isShare ? v + "%" : fmtN.format(v) } },
       },
       plugins: {
         legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, padding: 10, font: { size: 10 } } },

@@ -18,6 +18,12 @@
   --pc: 14 14 17;
   --s: 90 169 255;
   --sc: 14 14 17;
+  --su: 52 211 153;
+  --suc: 7 28 22;
+  --wa: 251 191 36;
+  --wac: 32 22 2;
+  --er: 248 113 113;
+  --erc: 32 7 7;
 }
 
 :root[data-theme="light"] {
@@ -39,6 +45,12 @@
   --pc: 244 242 237;
   --s: 29 78 216;
   --sc: 244 242 237;
+  --su: 22 163 74;
+  --suc: 255 255 255;
+  --wa: 180 83 9;
+  --wac: 255 255 255;
+  --er: 185 28 28;
+  --erc: 255 255 255;
 }
 
 html { background: var(--bg); }
@@ -110,6 +122,10 @@ a { text-underline-offset: 3px; }
   border-color: var(--ink) !important;
   color: var(--bg) !important;
 }
+.btn-error, .badge-error { color: rgb(var(--erc)) !important; }
+.btn-secondary, .badge-secondary { color: rgb(var(--sc)) !important; }
+.btn-success, .badge-success { color: rgb(var(--suc)) !important; }
+.btn-warning, .badge-warning { color: rgb(var(--wac)) !important; }
 .james-theme-toggle { min-width: 4.6rem; color: var(--accent); }
 
 .card, .stats, .stat, .alert, .dropdown-content, .modal-box, .collapse {

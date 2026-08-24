@@ -21,7 +21,9 @@
     var styles = getComputedStyle(document.documentElement);
     Chart.defaults.color = styles.getPropertyValue("--dim").trim();
     Chart.defaults.borderColor = styles.getPropertyValue("--line-soft").trim();
+    Chart.defaults.scale.grid.lineWidth = 0.35;
     Chart.defaults.font.family = 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    window.JAMES_CHART_GRID_COLOR = styles.getPropertyValue("--line-soft").trim();
   })();
 </script>
 <script src="{% static 'dashboard/events.js' %}"></script>
