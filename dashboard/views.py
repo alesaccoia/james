@@ -782,6 +782,12 @@ def data_home(request):
         conversion_breakdown[_acquisition_label(dimensions)][
             occurred_at.date().isoformat()] += 1
 
+    conversion_cohorts = defaultdict(lambda: {'leads': 0, 'customers': 0})
+    for subject, fact in lead_facts.items():
+        row = conversion_cohorts[fact['occurred_at'].date().isoformat()]
+        row['leads'] += 1
+        row['customers'] += int(subject in first_purchase)
+
     def _breakdown(rows):
         return [{'name': name,
                  'series': [{'date': day, 'value': value}
@@ -829,6 +835,11 @@ def data_home(request):
         'analytics': analytics,
         'campaigns': campaigns,
         'campaign_breakdowns': breakdowns,
+        'conversion_cohorts': [
+            {'date': day, **values,
+             'rate': round(100 * values['customers'] / values['leads'], 2)
+             if values['leads'] else None}
+            for day, values in sorted(conversion_cohorts.items())],
         'cpl': cpl,
         'calendar': {'upcoming': upcoming, 'in_progress': in_progress, 'late': late,
                      'total': qs.count()},

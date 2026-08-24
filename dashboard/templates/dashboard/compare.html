@@ -19,6 +19,20 @@
 
 <div id="content" class="hidden">
 
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+    <div class="join">
+      <input type="date" id="f-start" class="input input-bordered input-sm join-item" aria-label="Data iniziale">
+      <input type="date" id="f-end" class="input input-bordered input-sm join-item" aria-label="Data finale">
+      <button class="btn btn-sm join-item" id="btn-date-range">Applica</button>
+    </div>
+    <div class="join" id="group-tabs">
+      <button class="btn btn-sm join-item" data-g="day">Giorno</button>
+      <button class="btn btn-sm join-item" data-g="week">Settimana</button>
+      <button class="btn btn-sm join-item" data-g="month">Mese</button>
+    </div>
+  </div>
+
   <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="overview-kpis"></div>
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
@@ -58,6 +72,20 @@
 
   <div class="card bg-base-100 shadow mb-6 h-fit">
     <div class="card-body">
+      <div class="flex flex-wrap items-center gap-3">
+        <div>
+          <h2 class="card-title text-base">Tasso di conversione lead → cliente</h2>
+          <p class="text-sm opacity-60">Percentuale dei lead entrati nel periodo che hanno effettuato almeno un acquisto.</p>
+        </div>
+        <div class="grow"></div>
+        <div class="badge badge-lg badge-outline" id="home-conversion-rate">—</div>
+      </div>
+      <div class="h-72 relative"><canvas id="home-conversion-rate-chart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6 h-fit">
+    <div class="card-body">
       <div class="flex flex-wrap items-center gap-3 mb-1">
         <h2 class="card-title text-base">Piano editoriale</h2>
         <div class="grow"></div>
@@ -71,17 +99,6 @@
   <p class="text-sm opacity-60 -mt-4 mb-4">Metti insieme metriche di canali diversi sullo stesso grafico.</p>
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
-    <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
-    <div class="join">
-      <input type="date" id="f-start" class="input input-bordered input-sm join-item" aria-label="Data iniziale">
-      <input type="date" id="f-end" class="input input-bordered input-sm join-item" aria-label="Data finale">
-      <button class="btn btn-sm join-item" id="btn-date-range">Applica</button>
-    </div>
-    <div class="join" id="group-tabs">
-      <button class="btn btn-sm join-item" data-g="day">Giorno</button>
-      <button class="btn btn-sm join-item" data-g="week">Settimana</button>
-      <button class="btn btn-sm join-item" data-g="month">Mese</button>
-    </div>
     <div class="join">
       <button class="btn btn-sm join-item" id="btn-mode-abs">Valori assoluti</button>
       <button class="btn btn-sm join-item" id="btn-mode-norm">Normalizzato (indice 100)</button>
@@ -370,7 +387,7 @@ $("chk-events").addEventListener("change", () => { renderChart(); rememberCurren
 // "what's happening right now" without anyone having to configure anything.
 
 let HOME = null;
-let homeCharts = { analytics: null, cpl: null, campaigns: null };
+let homeCharts = { analytics: null, cpl: null, campaigns: null, conversionRate: null };
 let homeCampMetric = "spend";
 
 function inCurrentPeriod(rows) {
@@ -481,6 +498,55 @@ function renderHomeCampaigns() {
   });
 }
 
+function renderHomeConversionRate() {
+  if (homeCharts.conversionRate) homeCharts.conversionRate.destroy();
+  const rows = inCurrentPeriod(HOME.conversion_cohorts || []);
+  const grouped = {};
+  rows.forEach(row => {
+    const bucket = bucketOf(row.date, groupBy);
+    grouped[bucket] = grouped[bucket] || { leads: 0, customers: 0 };
+    grouped[bucket].leads += row.leads;
+    grouped[bucket].customers += row.customers;
+  });
+  const labels = Object.keys(grouped).sort();
+  const leads = rows.reduce((sum, row) => sum + row.leads, 0);
+  const customers = rows.reduce((sum, row) => sum + row.customers, 0);
+  const rate = leads ? customers / leads * 100 : null;
+  $("home-conversion-rate").textContent = rate == null ? "—" :
+    `${fmtN.format(rate)}% · ${fmt(customers)}/${fmt(leads)}`;
+  if (!labels.length) return;
+  homeCharts.conversionRate = new Chart($("home-conversion-rate-chart"), {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Lead diventati clienti",
+        data: labels.map(label => grouped[label].leads ?
+          grouped[label].customers / grouped[label].leads * 100 : null),
+        _leads: labels.map(label => grouped[label].leads),
+        _customers: labels.map(label => grouped[label].customers),
+        borderColor: PALETTE[2], backgroundColor: PALETTE[2],
+        borderWidth: 2, pointRadius: 3, tension: .25, spanGaps: true,
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10 } },
+        y: { beginAtZero: true, suggestedMax: 100, grid: { color: "#e5e7eb" },
+             ticks: { callback: value => value + "%" } },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => {
+          const i = ctx.dataIndex, dataset = ctx.dataset;
+          return ` ${fmtN.format(ctx.parsed.y)}% — ${fmt(dataset._customers[i])}/${fmt(dataset._leads[i])} lead`;
+        } } },
+      },
+    },
+  });
+}
+
 function renderHomeCalendar() {
   const cal = HOME.calendar || { upcoming: [], in_progress: [], late: [], total: 0 };
   $("home-cal-link").href = CMP_CFG.calendario_url;
@@ -515,6 +581,7 @@ function renderHome() {
   renderHomeAnalytics();
   renderHomeCpl();
   renderHomeCampaigns();
+  renderHomeConversionRate();
   renderHomeCalendar();
 }
 
