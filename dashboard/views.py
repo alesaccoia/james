@@ -503,6 +503,46 @@ def _google_ads_series(value_field, divisor=1):
     return [{'date': d, 'value': totals[d]} for d in sorted(totals)]
 
 
+def _paid_source_series():
+    fb = {key: defaultdict(float) for key in ('spend', 'impressions', 'clicks', 'leads')}
+    for data in _stream_rows('fb_ads_insights'):
+        day = str(data.get('date_start') or '')[:10]
+        if not day:
+            continue
+        for key in ('spend', 'impressions', 'clicks'):
+            fb[key][day] += _num(data.get(key))
+        fb['leads'][day] += _fb_action_value(data, 'lead')
+
+    google = {key: defaultdict(float) for key in ('spend', 'impressions', 'clicks', 'conversions')}
+    for data in _stream_rows('gads_campaign'):
+        day = str(data.get('segments_date') or '')[:10]
+        if not day:
+            continue
+        google['spend'][day] += _num(data.get('metrics_cost_micros')) / 1_000_000
+        google['impressions'][day] += _num(data.get('metrics_impressions'))
+        google['clicks'][day] += _num(data.get('metrics_clicks'))
+        google['conversions'][day] += _num(data.get('metrics_conversions'))
+
+    def points(values):
+        return [{'date': day, 'value': value} for day, value in sorted(values.items())]
+    return ({key: points(values) for key, values in fb.items()},
+            {key: points(values) for key, values in google.items()})
+
+
+def _ga_overview_series():
+    totals = {key: defaultdict(float) for key in
+              ('sessions', 'totalUsers', 'newUsers', 'screenPageViews')}
+    for data in _stream_rows('ga_website_overview'):
+        day = _ga_date(data.get('date'))
+        if not day:
+            continue
+        for key in totals:
+            totals[key][day] += _num(data.get(key))
+    return {key: [{'date': day, 'value': value}
+                  for day, value in sorted(values.items())]
+            for key, values in totals.items()}
+
+
 def _fb_lead_series():
     totals = defaultdict(float)
     for d in _stream_rows('fb_ads_insights'):
@@ -580,19 +620,21 @@ METRIC_INFO = {
 def _build_metrics():
     crm = performance_metrics()
     crm_daily = crm.get('daily', [])
+    fb, google = _paid_source_series()
+    ga = _ga_overview_series()
     series = {
-        'fb_spend': _daily_series('fb_ads_insights', 'date_start', 'spend'),
-        'fb_impressions': _daily_series('fb_ads_insights', 'date_start', 'impressions'),
-        'fb_clicks': _daily_series('fb_ads_insights', 'date_start', 'clicks'),
-        'fb_leads': _fb_lead_series(),
-        'gads_spend': _google_ads_series('metrics_cost_micros', 1_000_000),
-        'gads_impressions': _google_ads_series('metrics_impressions'),
-        'gads_clicks': _google_ads_series('metrics_clicks'),
-        'gads_conversions': _google_ads_series('metrics_conversions'),
-        'ga_sessions': _daily_series('ga_website_overview', 'date', 'sessions', ga_dates=True),
-        'ga_users': _daily_series('ga_website_overview', 'date', 'totalUsers', ga_dates=True),
-        'ga_new_users': _daily_series('ga_website_overview', 'date', 'newUsers', ga_dates=True),
-        'ga_pageviews': _daily_series('ga_website_overview', 'date', 'screenPageViews', ga_dates=True),
+        'fb_spend': fb['spend'],
+        'fb_impressions': fb['impressions'],
+        'fb_clicks': fb['clicks'],
+        'fb_leads': fb['leads'],
+        'gads_spend': google['spend'],
+        'gads_impressions': google['impressions'],
+        'gads_clicks': google['clicks'],
+        'gads_conversions': google['conversions'],
+        'ga_sessions': ga['sessions'],
+        'ga_users': ga['totalUsers'],
+        'ga_new_users': ga['newUsers'],
+        'ga_pageviews': ga['screenPageViews'],
         'ga_leads': _event_series('generate_lead'),
         'crm_leads': [{'date': d['date'], 'value': d['leads']} for d in crm_daily],
         'crm_whatsapp_leads': _crm_lead_source_series('whatsapp'),
