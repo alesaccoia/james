@@ -13,7 +13,7 @@ from django.utils.text import slugify
 from .analytics import commercial_metrics, performance_metrics
 from .models import (AirbyteRecord, BudgetLine, BudgetPlan, ChannelCadence,
                      ComparePreset, ContentPiece, FunnelKPI, FunnelStage,
-                     FunnelStageSource, MarketingEvent, Tag, TagDimension,
+                     FunnelStageSource, MarketingEvent, SubjectEvent, Tag, TagDimension,
                      TaggedEntity)
 
 
@@ -495,45 +495,50 @@ def _event_series(event_name):
 # just lets the user pick any combination to overlay on one chart. Add an
 # entry here whenever a new source/metric should be selectable for
 # cross-channel comparison.
+METRIC_INFO = {
+    'fb_spend': ('Spesa Meta Ads', 'Meta Ads', 'eur'),
+    'fb_impressions': ('Impression Meta Ads', 'Meta Ads', 'count'),
+    'fb_clicks': ('Click Meta Ads', 'Meta Ads', 'count'),
+    'fb_leads': ('Lead Meta Ads (Instant Form)', 'Meta Ads', 'count'),
+    'gads_spend': ('Spesa Google Ads', 'Google Ads', 'eur'),
+    'gads_impressions': ('Impression Google Ads', 'Google Ads', 'count'),
+    'gads_clicks': ('Click Google Ads', 'Google Ads', 'count'),
+    'gads_conversions': ('Conversioni Google Ads', 'Google Ads', 'count'),
+    'ga_sessions': ('Sessioni sito', 'Google Analytics', 'count'),
+    'ga_users': ('Utenti totali', 'Google Analytics', 'count'),
+    'ga_new_users': ('Nuovi utenti', 'Google Analytics', 'count'),
+    'ga_pageviews': ('Pageview', 'Google Analytics', 'count'),
+    'ga_leads': ('Lead generati (GA4)', 'Google Analytics', 'count'),
+    'crm_leads': ('Lead CRM', 'WUNDT CRM', 'count'),
+    'crm_new_customers': ('Nuovi clienti', 'WUNDT CRM', 'count'),
+    'crm_revenue': ('Incassi', 'WUNDT CRM', 'eur'),
+}
+
+
 def _build_metrics():
     crm = performance_metrics()
     crm_daily = crm.get('daily', [])
-    return {
-        'fb_spend': {'label': 'Spesa Meta Ads', 'source': 'Meta Ads', 'unit': 'eur',
-                     'series': _daily_series('fb_ads_insights', 'date_start', 'spend')},
-        'fb_impressions': {'label': 'Impression Meta Ads', 'source': 'Meta Ads', 'unit': 'count',
-                            'series': _daily_series('fb_ads_insights', 'date_start', 'impressions')},
-        'fb_clicks': {'label': 'Click Meta Ads', 'source': 'Meta Ads', 'unit': 'count',
-                      'series': _daily_series('fb_ads_insights', 'date_start', 'clicks')},
-        'fb_leads': {'label': 'Lead Meta Ads (Instant Form)', 'source': 'Meta Ads', 'unit': 'count',
-                     'series': _fb_lead_series()},
-        'gads_spend': {'label': 'Spesa Google Ads', 'source': 'Google Ads', 'unit': 'eur',
-                       'series': _google_ads_series('metrics_cost_micros', 1_000_000)},
-        'gads_impressions': {'label': 'Impression Google Ads', 'source': 'Google Ads', 'unit': 'count',
-                             'series': _google_ads_series('metrics_impressions')},
-        'gads_clicks': {'label': 'Click Google Ads', 'source': 'Google Ads', 'unit': 'count',
-                        'series': _google_ads_series('metrics_clicks')},
-        'gads_conversions': {'label': 'Conversioni Google Ads', 'source': 'Google Ads', 'unit': 'count',
-                             'series': _google_ads_series('metrics_conversions')},
-        'ga_sessions': {'label': 'Sessioni sito', 'source': 'Google Analytics', 'unit': 'count',
-                        'series': _daily_series('ga_website_overview', 'date', 'sessions', ga_dates=True)},
-        'ga_users': {'label': 'Utenti totali', 'source': 'Google Analytics', 'unit': 'count',
-                     'series': _daily_series('ga_website_overview', 'date', 'totalUsers', ga_dates=True)},
-        'ga_new_users': {'label': 'Nuovi utenti', 'source': 'Google Analytics', 'unit': 'count',
-                         'series': _daily_series('ga_website_overview', 'date', 'newUsers', ga_dates=True)},
-        'ga_pageviews': {'label': 'Pageview', 'source': 'Google Analytics', 'unit': 'count',
-                         'series': _daily_series('ga_website_overview', 'date', 'screenPageViews', ga_dates=True)},
-        'ga_leads': {'label': 'Lead generati (GA4)', 'source': 'Google Analytics', 'unit': 'count',
-                     'series': _event_series('generate_lead')},
-        'crm_leads': {'label': 'Lead CRM', 'source': 'WUNDT CRM', 'unit': 'count',
-                      'series': [{'date': d['date'], 'value': d['leads']} for d in crm_daily]},
-        'crm_new_customers': {'label': 'Nuovi clienti', 'source': 'WUNDT CRM', 'unit': 'count',
-                              'series': [{'date': d['date'], 'value': d['new_customers']}
-                                         for d in crm_daily]},
-        'crm_revenue': {'label': 'Incassi', 'source': 'WUNDT CRM', 'unit': 'eur',
-                        'series': [{'date': d['date'], 'value': d['revenue_eur']}
-                                   for d in crm_daily]},
+    series = {
+        'fb_spend': _daily_series('fb_ads_insights', 'date_start', 'spend'),
+        'fb_impressions': _daily_series('fb_ads_insights', 'date_start', 'impressions'),
+        'fb_clicks': _daily_series('fb_ads_insights', 'date_start', 'clicks'),
+        'fb_leads': _fb_lead_series(),
+        'gads_spend': _google_ads_series('metrics_cost_micros', 1_000_000),
+        'gads_impressions': _google_ads_series('metrics_impressions'),
+        'gads_clicks': _google_ads_series('metrics_clicks'),
+        'gads_conversions': _google_ads_series('metrics_conversions'),
+        'ga_sessions': _daily_series('ga_website_overview', 'date', 'sessions', ga_dates=True),
+        'ga_users': _daily_series('ga_website_overview', 'date', 'totalUsers', ga_dates=True),
+        'ga_new_users': _daily_series('ga_website_overview', 'date', 'newUsers', ga_dates=True),
+        'ga_pageviews': _daily_series('ga_website_overview', 'date', 'screenPageViews', ga_dates=True),
+        'ga_leads': _event_series('generate_lead'),
+        'crm_leads': [{'date': d['date'], 'value': d['leads']} for d in crm_daily],
+        'crm_new_customers': [{'date': d['date'], 'value': d['new_customers']}
+                              for d in crm_daily],
+        'crm_revenue': [{'date': d['date'], 'value': d['revenue_eur']} for d in crm_daily],
     }
+    return {key: {'label': info[0], 'source': info[1], 'unit': info[2],
+                  'series': series[key]} for key, info in METRIC_INFO.items()}
 
 
 @login_required
@@ -548,17 +553,16 @@ def dashboard_redirect(request):
 
 @login_required
 def compare(request):
-    metrics = _build_metrics()
     cfg = {
         'data_url': reverse('dashboard:data_compare'),
         'home_url': reverse('dashboard:data_home'),
         'calendario_url': reverse('dashboard:calendario'),
-        'metrics': {k: {'label': v['label'], 'source': v['source'], 'unit': v['unit']}
-                    for k, v in metrics.items()},
+        'metrics': {key: {'label': info[0], 'source': info[1], 'unit': info[2]}
+                    for key, info in METRIC_INFO.items()},
     }
     return render(request, 'dashboard/compare.html', {
         'cfg_json': json.dumps(cfg),
-        'has_data': any(m['series'] for m in metrics.values()),
+        'has_data': AirbyteRecord.objects.exists() or SubjectEvent.objects.exists(),
     })
 
 
