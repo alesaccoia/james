@@ -470,13 +470,21 @@ function renderHomeCampaigns() {
   const camps = ranked;
   if (!camps.length) return;
 
-  const dates = [...new Set(camps.flatMap(c => c.series.map(p => p.date)))].sort();
+  const rawDates = camps.flatMap(c => c.series.map(p => p.date)).sort();
+  const rangeStart = period === "custom" ? customStart :
+    (period === "all" ? (rawDates[0] || todayStr()) : daysAgo(period));
+  const rangeEnd = period === "custom" ? customEnd : todayStr();
+  const dates = continuousBuckets(rangeStart, groupBy, rangeEnd);
   homeCharts.campaigns = new Chart($("home-campaigns"), {
     type: "bar",
     data: {
       labels: dates,
       datasets: camps.map((c, i) => {
-        const by = Object.fromEntries(c.series.map(p => [p.date, p.value]));
+        const by = {};
+        c.series.forEach(p => {
+          const bucket = bucketOf(p.date, groupBy);
+          by[bucket] = (by[bucket] || 0) + p.value;
+        });
         return { label: c.name.length > 34 ? c.name.slice(0, 34) + "…" : c.name,
                  data: dates.map(d => by[d] || 0),
                  backgroundColor: PALETTE[i % PALETTE.length], borderRadius: 2 };
@@ -485,7 +493,10 @@ function renderHomeCampaigns() {
     options: {
       maintainAspectRatio: false,
       scales: {
-        x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 10 } },
+        x: { stacked: true, grid: { display: false }, ticks: {
+          autoSkip: groupBy !== "day", maxTicksLimit: groupBy === "day" ? undefined : 10,
+          minRotation: groupBy === "day" ? 45 : 0, maxRotation: 45,
+        } },
         y: { stacked: true, beginAtZero: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 },
              ticks: { callback: v => homeCampMetric === "spend" ? fmtEUR.format(v) : fmt(v) } },
       },
@@ -536,7 +547,10 @@ function renderHomeConversionRate() {
     options: {
       maintainAspectRatio: false,
       scales: {
-        x: { grid: { display: false }, ticks: { maxTicksLimit: 10 } },
+        x: { grid: { display: false }, ticks: {
+          autoSkip: groupBy !== "day", maxTicksLimit: groupBy === "day" ? undefined : 10,
+          minRotation: groupBy === "day" ? 45 : 0, maxRotation: 45,
+        } },
         y: { beginAtZero: true, suggestedMax: 100, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 },
              ticks: { callback: value => value + "%" } },
       },
