@@ -4,7 +4,61 @@ from django.contrib import admin
 from .models import (AirbyteRecord, BudgetLine, BudgetPlan, ChannelCadence,
                      ContentPiece, FunnelKPI, FunnelKPIValue, FunnelStage,
                      FunnelStageSource, ImportLog, MarketingEvent, Tag,
-                     TagDimension, TaggedEntity)
+                     TagDimension, TaggedEntity, AnalyticsSource,
+                     FieldDefinition, SubjectEvent, MetricSnapshot, IngestionLog)
+from .models import EditorialChange
+
+
+@admin.register(AnalyticsSource)
+class AnalyticsSourceAdmin(admin.ModelAdmin):
+    list_display = ('name', 'slug', 'identity_mode', 'is_active', 'created_at')
+    list_filter = ('identity_mode', 'is_active')
+    search_fields = ('name', 'slug')
+    readonly_fields = ('api_key_hash', 'created_at')
+
+
+@admin.register(FieldDefinition)
+class FieldDefinitionAdmin(admin.ModelAdmin):
+    list_display = ('key_display', 'source', 'data_type', 'role', 'sensitivity', 'aggregation', 'is_active')
+    list_filter = ('source', 'data_type', 'role', 'sensitivity', 'aggregation', 'is_active')
+    search_fields = ('namespace', 'name', 'description')
+
+    @admin.display(description='Campo')
+    def key_display(self, obj):
+        return obj.key
+
+
+@admin.register(SubjectEvent)
+class SubjectEventAdmin(admin.ModelAdmin):
+    list_display = ('event_id', 'source', 'event_type', 'occurred_at', 'event_version')
+    list_filter = ('source', 'event_type')
+    search_fields = ('event_id', 'external_subject_id')
+    date_hierarchy = 'occurred_at'
+    readonly_fields = ('source', 'event_id', 'event_version', 'external_subject_id', 'event_type',
+                       'occurred_at', 'dimensions', 'measures', 'ingested_at', 'updated_at')
+
+
+@admin.register(MetricSnapshot)
+class MetricSnapshotAdmin(admin.ModelAdmin):
+    list_display = ('snapshot_key', 'source', 'as_of', 'updated_at')
+    list_filter = ('source',)
+    search_fields = ('snapshot_key',)
+
+
+@admin.register(IngestionLog)
+class IngestionLogAdmin(admin.ModelAdmin):
+    list_display = ('received_at', 'source', 'kind', 'ok', 'records_received',
+                    'records_created', 'records_updated', 'records_stale')
+    list_filter = ('source', 'kind', 'ok')
+    readonly_fields = [field.name for field in IngestionLog._meta.fields]
+
+
+@admin.register(EditorialChange)
+class EditorialChangeAdmin(admin.ModelAdmin):
+    list_display = ('created_at', 'external_origin', 'external_ref', 'version', 'operation')
+    list_filter = ('external_origin', 'operation')
+    search_fields = ('external_ref',)
+    readonly_fields = [field.name for field in EditorialChange._meta.fields]
 
 
 @admin.register(ImportLog)

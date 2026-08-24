@@ -1,0 +1,16 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Competitor e Share of Voice · JAMES{% endblock %}
+{% block content %}
+<h1>Competitor e Share of Voice</h1>
+<p>Questa analisi ora appartiene a JAMES. WUNDT non raccoglie né presenta più dati competitor.</p>
+<div class="cards">
+  <div class="card"><strong>{{ competitors|length }}</strong><br>brand monitorati</div>
+  <div class="card"><strong>{{ metric_count }}</strong><br>osservazioni storiche</div>
+  <div class="card"><strong>{{ ad_count }}</strong><br>annunci Meta censiti</div>
+</div>
+{% if latest_run %}<p>Ultimo aggiornamento: {{ latest_run.run_date }} · {{ latest_run.status }}</p>{% endif %}
+<p><a href="{% url 'competitors:data_sov' %}">Scarica i dati normalizzati JSON</a> · <a href="{% url 'competitors:traffic' %}">Traffico mensile competitor</a></p>
+<table><thead><tr><th>Brand</th><th>Dominio</th><th>Meta Page ID</th><th>Attivo</th></tr></thead><tbody>
+{% for competitor in competitors %}<tr><td>{{ competitor.name }}{% if competitor.is_self %} (Mentor){% endif %}</td><td>{{ competitor.domain|default:"—" }}</td><td>{{ competitor.meta_page_id|default:"—" }}</td><td>{{ competitor.is_active|yesno:"sì,no" }}</td></tr>{% endfor %}
+</tbody></table>
+{% endblock %}

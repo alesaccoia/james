@@ -1,3 +1,6 @@
+import hashlib
+import secrets
+
 from django.db import models
 
 
@@ -373,6 +376,8 @@ class ContentPiece(models.Model):
     ]
 
     title = models.CharField(max_length=250)
+    external_origin = models.CharField(max_length=60, blank=True, default='', db_index=True)
+    external_ref = models.CharField(max_length=200, blank=True, default='', db_index=True)
     channel = models.CharField(max_length=40, help_text='Deve combaciare con ChannelCadence.channel.')
     content_format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default='post')
     stage = models.ForeignKey(FunnelStage, on_delete=models.SET_NULL, null=True, blank=True,
@@ -383,6 +388,7 @@ class ContentPiece(models.Model):
         related_name='content_pieces',
         help_text='Campagna/ad set Meta a cui questa creatività è associata, se è un contenuto paid.')
     planned_date = models.DateField(db_index=True)
+    planned_time = models.TimeField(null=True, blank=True)
     published_date = models.DateField(null=True, blank=True, db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='idea', db_index=True)
     owner = models.CharField(max_length=120, blank=True, help_text='Chi lo produce (social, designer, tutor...).')
@@ -393,11 +399,19 @@ class ContentPiece(models.Model):
     external_permalink = models.URLField(blank=True, help_text='Link al post pubblicato, per agganciare le metriche reali.')
     external_post_id = models.CharField(max_length=100, blank=True, db_index=True)
     notes = models.TextField(blank=True)
+    workflow_metadata = models.JSONField(default=dict, blank=True)
+    canonical_version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['-planned_date', '-id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['external_origin', 'external_ref'],
+                condition=~models.Q(external_origin='') & ~models.Q(external_ref=''),
+                name='content_external_origin_ref_unique'),
+        ]
 
     def __str__(self):
         return f'{self.planned_date} — {self.title}'
@@ -405,6 +419,22 @@ class ContentPiece(models.Model):
     @property
     def effective_date(self):
         return self.published_date or self.planned_date
+
+
+class EditorialChange(models.Model):
+    content = models.ForeignKey(ContentPiece, null=True, blank=True, on_delete=models.SET_NULL,
+                                related_name='change_log')
+    external_origin = models.CharField(max_length=60)
+    external_ref = models.CharField(max_length=200)
+    version = models.PositiveIntegerField()
+    operation = models.CharField(max_length=20, choices=[('created', 'Created'),
+                                                         ('updated', 'Updated'),
+                                                         ('deleted', 'Deleted')])
+    changes = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
 
 
 class ComparePreset(models.Model):
@@ -485,3 +515,162 @@ class MarketingEvent(models.Model):
 
     def __str__(self):
         return f'{self.date} — {self.name}'
+
+
+# ------------------------------------------------ generic analytics ingestion
+
+
+class AnalyticsSource(models.Model):
+    IDENTITY_CHOICES = [
+        ('aggregate_only', 'Aggregate snapshots only'),
+        ('pseudonymous_events', 'Pseudonymous subject events'),
+        ('external_id', 'Clear external CRM ID'),
+    ]
+
+    name = models.CharField(max_length=150)
+    slug = models.SlugField(unique=True)
+    identity_mode = models.CharField(
+        max_length=30, choices=IDENTITY_CHOICES,
+        default='pseudonymous_events')
+    api_key_hash = models.CharField(max_length=64, blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+    def issue_api_key(self):
+        raw = secrets.token_urlsafe(32)
+        self.api_key_hash = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+        self.save(update_fields=['api_key_hash'])
+        return raw
+
+    def check_api_key(self, raw):
+        if not raw or not self.api_key_hash:
+            return False
+        candidate = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+        return secrets.compare_digest(candidate, self.api_key_hash)
+
+
+class FieldDefinition(models.Model):
+    TYPE_CHOICES = [
+        ('string', 'String'), ('number', 'Number'), ('boolean', 'Boolean'),
+        ('date', 'Date'), ('datetime', 'Datetime'), ('enum', 'Enum'),
+    ]
+    ROLE_CHOICES = [
+        ('dimension', 'Dimension'), ('measure', 'Measure'),
+        ('identifier', 'Identifier'),
+    ]
+    SENSITIVITY_CHOICES = [
+        ('public', 'Public'), ('internal', 'Internal'),
+        ('pseudonymous', 'Pseudonymous'), ('prohibited', 'Prohibited'),
+    ]
+    AGGREGATION_CHOICES = [
+        ('none', 'None'), ('sum', 'Sum'), ('count', 'Count'),
+        ('distinct', 'Distinct'), ('min', 'Min'), ('max', 'Max'),
+    ]
+
+    source = models.ForeignKey(
+        AnalyticsSource, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='field_definitions',
+        help_text='Null means the definition is shared by every source.')
+    namespace = models.CharField(max_length=100)
+    name = models.CharField(max_length=100)
+    data_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    sensitivity = models.CharField(
+        max_length=20, choices=SENSITIVITY_CHOICES, default='internal')
+    aggregation = models.CharField(
+        max_length=20, choices=AGGREGATION_CHOICES, default='none')
+    description = models.TextField(blank=True)
+    enum_values = models.JSONField(default=list, blank=True)
+    schema_version = models.PositiveIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['namespace', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['source', 'namespace', 'name'],
+                condition=models.Q(source__isnull=False),
+                name='field_source_namespace_name_unique'),
+            models.UniqueConstraint(
+                fields=['namespace', 'name'],
+                condition=models.Q(source__isnull=True),
+                name='field_shared_namespace_name_unique'),
+        ]
+
+    @property
+    def key(self):
+        return f'{self.namespace}.{self.name}'
+
+    def __str__(self):
+        return self.key
+
+
+class SubjectEvent(models.Model):
+    """Versioned analytics fact with no direct contact information."""
+
+    source = models.ForeignKey(
+        AnalyticsSource, on_delete=models.PROTECT, related_name='events')
+    event_id = models.CharField(max_length=200)
+    event_version = models.PositiveIntegerField(default=1)
+    external_subject_id = models.CharField(
+        max_length=200, blank=True, default='', db_index=True)
+    event_type = models.CharField(max_length=100, db_index=True)
+    occurred_at = models.DateTimeField(db_index=True)
+    dimensions = models.JSONField(default=dict, blank=True)
+    measures = models.JSONField(default=dict, blank=True)
+    ingested_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        ordering = ['occurred_at', 'pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['source', 'event_id'],
+                name='subject_event_source_id_unique'),
+        ]
+        indexes = [
+            models.Index(fields=['source', 'event_type', 'occurred_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.source.slug}:{self.event_id}'
+
+
+class MetricSnapshot(models.Model):
+    source = models.ForeignKey(
+        AnalyticsSource, on_delete=models.PROTECT, related_name='snapshots')
+    snapshot_key = models.CharField(max_length=240)
+    as_of = models.DateTimeField(db_index=True)
+    dimensions = models.JSONField(default=dict, blank=True)
+    measures = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['as_of', 'pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['source', 'snapshot_key'],
+                name='metric_snapshot_source_key_unique'),
+        ]
+
+
+class IngestionLog(models.Model):
+    source = models.ForeignKey(
+        AnalyticsSource, on_delete=models.PROTECT, related_name='ingestion_logs')
+    received_at = models.DateTimeField(auto_now_add=True)
+    kind = models.CharField(max_length=20, choices=[('events', 'Events'), ('snapshots', 'Snapshots')])
+    records_received = models.PositiveIntegerField(default=0)
+    records_created = models.PositiveIntegerField(default=0)
+    records_updated = models.PositiveIntegerField(default=0)
+    records_stale = models.PositiveIntegerField(default=0)
+    ok = models.BooleanField(default=True)
+    error = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-received_at']

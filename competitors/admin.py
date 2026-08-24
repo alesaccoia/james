@@ -1,6 +1,7 @@
 from django.contrib import admin
 
-from .models import Competitor, MonthlyTraffic, TrafficUpload
+from .models import (Competitor, MetaAdState, MetricPoint, MonthlyTraffic,
+                     SovConfig, SovRun, TrafficUpload)
 
 
 @admin.register(Competitor)
@@ -19,3 +20,27 @@ class MonthlyTrafficAdmin(admin.ModelAdmin):
 @admin.register(TrafficUpload)
 class TrafficUploadAdmin(admin.ModelAdmin):
     list_display = ('filename', 'uploaded_by', 'uploaded_at', 'domains', 'datapoints')
+
+
+@admin.register(SovConfig)
+class SovConfigAdmin(admin.ModelAdmin):
+    list_display = ('geo', 'meta_reach_since', 'last_meta_run', 'meta_reach_period_days')
+
+
+@admin.register(SovRun)
+class SovRunAdmin(admin.ModelAdmin):
+    list_display = ('run_date', 'trigger', 'status', 'started_at', 'finished_at')
+    list_filter = ('trigger', 'status')
+
+
+@admin.register(MetricPoint)
+class MetricPointAdmin(admin.ModelAdmin):
+    list_display = ('run_date', 'competitor', 'metric', 'value')
+    list_filter = ('metric', 'competitor')
+    date_hierarchy = 'run_date'
+
+
+@admin.register(MetaAdState)
+class MetaAdStateAdmin(admin.ModelAdmin):
+    list_display = ('ad_archive_id', 'competitor', 'active', 'last_seen', 'reach')
+    list_filter = ('competitor', 'active')

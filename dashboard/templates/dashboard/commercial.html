@@ -1,0 +1,26 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}LTV e vendite{% endblock %}
+{% block content %}
+<div class="mb-6"><h1 class="text-2xl font-bold">LTV, coorti e campagne CRM</h1><p class="text-sm opacity-60">Calcoli aggregati sugli eventi pseudonimi ricevuti dai CRM. Nessuna anagrafica viene mostrata o conservata qui.</p></div>
+<div id="loading" class="alert">Caricamento metriche…</div>
+<div id="content" class="hidden">
+  <div id="totals" class="stats stats-vertical lg:stats-horizontal shadow w-full mb-6"></div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="card bg-base-100 shadow"><div class="card-body"><h2 class="card-title">Ricavi attribuiti</h2><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>Campagna</th><th>Clienti</th><th>Acquisti</th><th>Ricavi</th></tr></thead><tbody id="campaigns"></tbody></table></div></div></div>
+    <div class="card bg-base-100 shadow"><div class="card-body"><h2 class="card-title">Coorti di acquisizione</h2><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>Mese</th><th>Lead</th><th>Clienti</th><th>LTV realizzato</th></tr></thead><tbody id="cohorts"></tbody></table></div></div></div>
+    <div class="card bg-base-100 shadow lg:col-span-2"><div class="card-body"><h2 class="card-title">Effetto campagne di upsell e recupero (30 giorni)</h2><p class="text-xs opacity-60">Associazione osservazionale: acquisto entro 30 giorni dalla prima esposizione, non causalità sperimentale.</p><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>Campagna/template</th><th>Esposti</th><th>Convertiti</th><th>Tasso</th><th>Ricavi</th></tr></thead><tbody id="effects"></tbody></table></div></div></div>
+  </div>
+</div>
+<script>
+const eur = n => new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(n||0);
+const esc = v => String(v??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+fetch('{% url "dashboard:data_commercial_metrics" %}?source=wundt').then(r=>r.json()).then(data=>{
+  const t=data.totals, horizons=t.mature_ltv_horizons_eur||{};
+  document.getElementById('totals').innerHTML=[['Ricavi',eur(t.revenue_eur)],['Clienti',t.customers],['LTV medio',eur(t.average_ltv_eur)],['LTV 90g maturo',horizons['90']==null?'—':eur(horizons['90'])],['Ricorrenti',t.repeat_customers],['Recuperati',t.recovered_customers]].map(([k,v])=>`<div class="stat"><div class="stat-title">${k}</div><div class="stat-value text-xl">${v}</div></div>`).join('');
+  document.getElementById('campaigns').innerHTML=data.campaigns.map(r=>`<tr><td>${esc(r.campaign)}</td><td>${r.customers}</td><td>${r.purchases}</td><td>${eur(r.revenue_eur)}</td></tr>`).join('');
+  document.getElementById('cohorts').innerHTML=data.cohorts.map(r=>`<tr><td>${esc(r.month)}</td><td>${r.subjects}</td><td>${r.customers}</td><td>${eur(r.average_ltv_eur)}</td></tr>`).join('');
+  document.getElementById('effects').innerHTML=data.campaign_effects_30d.map(r=>`<tr><td>${esc(r.campaign)}</td><td>${r.exposed_subjects}</td><td>${r.converted_subjects}</td><td>${(r.conversion_rate*100).toFixed(1)}%</td><td>${eur(r.revenue_eur)}</td></tr>`).join('');
+  document.getElementById('loading').classList.add('hidden'); document.getElementById('content').classList.remove('hidden');
+}).catch(err=>{document.getElementById('loading').textContent='Errore: '+err});
+</script>
+{% endblock %}

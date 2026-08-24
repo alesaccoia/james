@@ -1,15 +1,24 @@
 from django.urls import path
 
-from . import views
+from . import ingestion, ped_api, views
 
 app_name = 'dashboard'
 
 urlpatterns = [
+    path('api/v1/editorial-calendar/', ped_api.editorial_calendar,
+         name='editorial_calendar_api'),
+    path('api/v1/editorial-calendar/<str:origin>/<str:ref>/',
+         ped_api.editorial_calendar_item, name='editorial_calendar_item_api'),
+    path('api/v1/ingest/events/', ingestion.ingest_events, name='ingest_events'),
+    path('api/v1/ingest/snapshots/', ingestion.ingest_snapshots, name='ingest_snapshots'),
     path('', views.compare, name='compare'),
     path('guida/', views.help_page, name='help'),
     path('data/compare.json', views.data_compare, name='data_compare'),
     path('data/compare-presets.json', views.compare_presets, name='compare_presets'),
     path('data/home.json', views.data_home, name='data_home'),
+    path('data/commercial-metrics.json', views.data_commercial_metrics,
+         name='data_commercial_metrics'),
+    path('commerciale/', views.commercial, name='commercial'),
 
     path('meta-ads/', views.dashboard, name='dashboard'),
     path('meta-ads/data.json', views.data_marketing, name='data_marketing'),

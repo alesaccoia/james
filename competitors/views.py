@@ -2,12 +2,14 @@ import json
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.db import models
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 
 from . import sameapi
-from .models import Competitor, MonthlyTraffic, TrafficUpload
+from .models import (Competitor, MetaAdState, MetricPoint, MonthlyTraffic,
+                     SovRun, TrafficUpload)
 
 
 @login_required
@@ -60,3 +62,29 @@ def data_traffic(request):
             'visits': t.visits,
         })
     return JsonResponse({'rows': rows})
+
+
+@login_required
+def sov(request):
+    return render(request, 'competitors/sov.html', {
+        'competitors': Competitor.objects.all(),
+        'latest_run': SovRun.objects.first(),
+        'metric_count': MetricPoint.objects.count(),
+        'ad_count': MetaAdState.objects.count(),
+    })
+
+
+@login_required
+def data_sov(request):
+    points = MetricPoint.objects.select_related('competitor')
+    if request.GET.get('metric'):
+        points = points.filter(metric=request.GET['metric'])
+    rows = [{'date': point.run_date.isoformat(), 'competitor': point.competitor.name,
+             'metric': point.metric, 'value': point.value, 'note': point.note}
+            for point in points.order_by('run_date', 'competitor__name', 'metric')]
+    ads = MetaAdState.objects.values('competitor__name').order_by().annotate(
+        ads=models.Count('id'), active=models.Count('id', filter=models.Q(active=True)),
+        reach=models.Sum('reach'))
+    return JsonResponse({'rows': rows, 'ads': [
+        {'competitor': row['competitor__name'], 'ads': row['ads'],
+         'active': row['active'], 'reach': row['reach'] or 0} for row in ads]})
