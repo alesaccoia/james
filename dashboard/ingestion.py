@@ -67,8 +67,8 @@ def _validate_scalar(definition, value):
         raise ValueError(f'{definition.key} is not an allowed enum value.')
 
 
-def _validate_fields(source, dimensions, measures):
-    definitions = _field_map(source)
+def _validate_fields(source, dimensions, measures, definitions=None):
+    definitions = definitions or _field_map(source)
     for role, values in (('dimension', dimensions), ('measure', measures)):
         if not isinstance(values, dict):
             raise ValueError(f'{role}s must be an object.')
@@ -133,6 +133,7 @@ def ingest_events(request):
         created = updated = stale = 0
         with transaction.atomic():
             _register_fields(source, payload.get('fields', []))
+            definitions = _field_map(source)
             for row in events:
                 if not isinstance(row, dict):
                     raise ValueError('Each event must be an object.')
@@ -146,7 +147,7 @@ def ingest_events(request):
                     raise ValueError('occurred_at must be an ISO datetime.')
                 dimensions = row.get('dimensions', {})
                 measures = row.get('measures', {})
-                _validate_fields(source, dimensions, measures)
+                _validate_fields(source, dimensions, measures, definitions)
                 event_id = str(row.get('event_id') or '')
                 version = int(row.get('event_version') or 0)
                 event_type = str(row.get('event_type') or '')
@@ -205,10 +206,11 @@ def ingest_snapshots(request):
         created = updated = 0
         with transaction.atomic():
             _register_fields(source, payload.get('fields', []))
+            definitions = _field_map(source)
             for row in snapshots:
                 dimensions = row.get('dimensions', {})
                 measures = row.get('measures', {})
-                _validate_fields(source, dimensions, measures)
+                _validate_fields(source, dimensions, measures, definitions)
                 as_of = parse_datetime(str(row.get('as_of') or ''))
                 key = str(row.get('snapshot_key') or '')
                 if row.get('schema_version') != 1 or as_of is None or not key:
