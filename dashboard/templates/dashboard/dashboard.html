@@ -1,12 +1,12 @@
 {% extends 'dashboard/base.html' %}
-{% block title %}Meta Ads{% endblock %}
+{% block title %}{{ page_title|default:"Meta Ads" }}{% endblock %}
 {% block nav_group_dati %}btn-active{% endblock %}
 {% block content %}
 
 <div class="flex flex-wrap items-center gap-3 mb-6">
   <div>
-    <h1 class="text-2xl font-bold">Marketing</h1>
-    <p class="text-sm opacity-60">Performance pubblicitarie — tutti i canali insieme</p>
+    <h1 class="text-2xl font-bold">{{ page_title|default:"Meta Ads" }}</h1>
+    <p class="text-sm opacity-60">{{ page_subtitle|default:"Performance delle campagne Meta" }}</p>
   </div>
   <div class="grow"></div>
   <div class="badge badge-lg badge-outline" id="pill-range">periodo: —</div>
@@ -84,7 +84,7 @@ const METRIC_DEFS = {
   spend: { label: "Spesa", color: PALETTE[0], unit: "eur" },
   impressions: { label: "Impression", color: PALETTE[1], unit: "count" },
   clicks: { label: "Click", color: PALETTE[2], unit: "count" },
-  leads: { label: "Lead", color: PALETTE[3], unit: "count" },
+  leads: { label: MKT_CFG.conversion_label || "Lead", color: PALETTE[3], unit: "count" },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -197,7 +197,7 @@ function renderKPIs() {
     { name: "Click", val: fmt(clicks) },
     { name: "CTR medio", val: ctr == null ? "—" : fmt(ctr) + "%" },
     { name: "CPC medio", val: cpc == null ? "—" : fmtEURc.format(cpc) },
-    { name: "Lead (Instant Form)", val: fmt(leads) },
+    { name: MKT_CFG.conversion_label || "Lead (Instant Form)", val: fmt(leads) },
     { name: "CPL medio", val: cpl == null ? "—" : fmtEURc.format(cpl) },
   ];
   $("kpis").innerHTML = defs.map(d => `

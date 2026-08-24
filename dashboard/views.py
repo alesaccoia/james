@@ -119,6 +119,41 @@ def data_marketing(request):
     return JsonResponse({'rows': rows})
 
 
+@login_required
+def google_ads(request):
+    cfg = {
+        'data_url': reverse('dashboard:data_google_ads'),
+        'page_title': 'Google Ads',
+        'page_subtitle': 'Spesa, campagne e conversioni sincronizzate da Airbyte',
+        'conversion_label': 'Conversioni',
+    }
+    return render(request, 'dashboard/dashboard.html', {
+        'cfg_json': json.dumps(cfg),
+        'page_title': cfg['page_title'],
+        'page_subtitle': cfg['page_subtitle'],
+        'has_data': AirbyteRecord.objects.filter(stream='gads_campaign').exists(),
+    })
+
+
+@login_required
+def data_google_ads(request):
+    rows = []
+    for data in _stream_rows('gads_campaign'):
+        date_s = str(data.get('segments_date') or '')[:10]
+        if not date_s:
+            continue
+        rows.append({
+            'date': date_s,
+            'channel': 'Google Ads',
+            'campaign': data.get('campaign_name') or '(senza nome)',
+            'spend': _num(data.get('metrics_cost_micros')) / 1_000_000,
+            'impressions': _num(data.get('metrics_impressions')),
+            'clicks': _num(data.get('metrics_clicks')),
+            'leads': _num(data.get('metrics_conversions')),
+        })
+    return JsonResponse({'rows': rows})
+
+
 # -------------------------------------------------------------- Meta organic
 # Facebook Page + Instagram Business Account organic content, via the
 # 'source-facebook-pages' / 'source-instagram-organic' Airbyte connectors
@@ -490,6 +525,23 @@ def _event_series(event_name):
     return [{'date': d, 'value': totals[d]} for d in sorted(totals)]
 
 
+def _crm_lead_source_series(source_slug):
+    first_by_subject = {}
+    events = SubjectEvent.objects.filter(
+        source__slug='wundt', event_type='lead_created').values_list(
+            'external_subject_id', 'occurred_at', 'dimensions')
+    for subject, occurred_at, dimensions in events.iterator():
+        if dimensions.get('wundt.lead_source') != source_slug:
+            continue
+        key = subject or f'anonymous:{occurred_at.isoformat()}'
+        first_by_subject[key] = min(
+            occurred_at, first_by_subject.get(key, occurred_at))
+    totals = defaultdict(float)
+    for occurred_at in first_by_subject.values():
+        totals[occurred_at.date().isoformat()] += 1
+    return [{'date': day, 'value': value} for day, value in sorted(totals.items())]
+
+
 # Registry of comparable metrics across every connected source. Each entry
 # knows how to build its own daily {date, value} series; the compare view
 # just lets the user pick any combination to overlay on one chart. Add an
@@ -510,6 +562,7 @@ METRIC_INFO = {
     'ga_pageviews': ('Pageview', 'Google Analytics', 'count'),
     'ga_leads': ('Lead generati (GA4)', 'Google Analytics', 'count'),
     'crm_leads': ('Lead CRM', 'WUNDT CRM', 'count'),
+    'crm_whatsapp_leads': ('Lead WhatsApp diretti', 'WUNDT CRM', 'count'),
     'crm_new_customers': ('Nuovi clienti', 'WUNDT CRM', 'count'),
     'crm_revenue': ('Incassi', 'WUNDT CRM', 'eur'),
 }
@@ -533,6 +586,7 @@ def _build_metrics():
         'ga_pageviews': _daily_series('ga_website_overview', 'date', 'screenPageViews', ga_dates=True),
         'ga_leads': _event_series('generate_lead'),
         'crm_leads': [{'date': d['date'], 'value': d['leads']} for d in crm_daily],
+        'crm_whatsapp_leads': _crm_lead_source_series('whatsapp'),
         'crm_new_customers': [{'date': d['date'], 'value': d['new_customers']}
                               for d in crm_daily],
         'crm_revenue': [{'date': d['date'], 'value': d['revenue_eur']} for d in crm_daily],

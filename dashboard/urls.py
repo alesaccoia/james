@@ -27,6 +27,9 @@ urlpatterns = [
     path('meta-ads/', views.dashboard, name='dashboard'),
     path('meta-ads/data.json', views.data_marketing, name='data_marketing'),
 
+    path('google-ads/', views.google_ads, name='google_ads'),
+    path('google-ads/data.json', views.data_google_ads, name='data_google_ads'),
+
     path('facebook/', views.facebook_page, name='facebook'),
     path('facebook/data.json', views.data_facebook, name='data_facebook'),
 

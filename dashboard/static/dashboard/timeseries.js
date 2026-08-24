@@ -41,8 +41,8 @@ window.TimeSeries = (function () {
   // Continuous list of buckets (day/week/month) covering [startStr, today],
   // deduped and sorted - the x-axis to render against regardless of which
   // dates actually have data.
-  function continuousBuckets(startStr, groupBy) {
-    return [...new Set(allDaysInRange(startStr, todayStr()).map(d => bucketOf(d, groupBy)))].sort();
+  function continuousBuckets(startStr, groupBy, endStr) {
+    return [...new Set(allDaysInRange(startStr, endStr || todayStr()).map(d => bucketOf(d, groupBy)))].sort();
   }
 
   function renderGroupTabs(el, groupBy, onChange) {

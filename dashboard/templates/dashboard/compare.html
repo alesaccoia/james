@@ -71,6 +71,11 @@
 
   <div class="flex flex-wrap items-center gap-3 mb-6">
     <div class="tabs tabs-boxed w-fit" id="period-tabs"></div>
+    <div class="join">
+      <input type="date" id="f-start" class="input input-bordered input-sm join-item" aria-label="Data iniziale">
+      <input type="date" id="f-end" class="input input-bordered input-sm join-item" aria-label="Data finale">
+      <button class="btn btn-sm join-item" id="btn-date-range">Applica</button>
+    </div>
     <div class="join" id="group-tabs">
       <button class="btn btn-sm join-item" data-g="day">Giorno</button>
       <button class="btn btn-sm join-item" data-g="week">Settimana</button>
@@ -143,12 +148,18 @@ let SERIES = {}; // key -> [{date, value}]
 let EVENTS = [];
 let selected = new Set(METRIC_KEYS.slice(0, 3));
 let period = 30;
+let customStart = "";
+let customEnd = "";
 let groupBy = "day";
 let mode = "abs"; // abs | norm
 let chart = null;
 const { daysAgo, todayStr, bucketOf, continuousBuckets, renderGroupTabs } = TimeSeries;
 
 function filteredSeries(key) {
+  if (period === "custom") {
+    return (SERIES[key] || []).filter(p =>
+      (!customStart || p.date >= customStart) && (!customEnd || p.date <= customEnd));
+  }
   const since = period === "all" ? null : daysAgo(period);
   return (SERIES[key] || []).filter(p => !since || p.date >= since);
 }
@@ -169,8 +180,24 @@ function renderPeriodTabs() {
   $("period-tabs").innerHTML = tabs.map(([v, l]) =>
     `<a class="tab ${v === period ? "tab-active" : ""}" data-v="${v}">${l}</a>`).join("");
   $("period-tabs").querySelectorAll("a").forEach(b =>
-    b.onclick = () => { period = b.dataset.v === "all" ? "all" : Number(b.dataset.v); renderAll(); });
+    b.onclick = () => {
+      period = b.dataset.v === "all" ? "all" : Number(b.dataset.v);
+      customStart = customEnd = "";
+      $("f-start").value = $("f-end").value = "";
+      renderAll();
+    });
 }
+
+$("btn-date-range").onclick = () => {
+  customStart = $("f-start").value;
+  customEnd = $("f-end").value;
+  if (!customStart || !customEnd || customStart > customEnd) {
+    alert("Seleziona una data iniziale e finale valide.");
+    return;
+  }
+  period = "custom";
+  renderAll();
+};
 
 function renderModeButtons() {
   $("btn-mode-abs").classList.toggle("btn-active", mode === "abs");
@@ -215,8 +242,10 @@ function renderChart() {
 
   const allRawDates = new Set();
   keys.forEach(k => filteredSeries(k).forEach(p => allRawDates.add(p.date)));
-  const rangeStart = period === "all" ? ([...allRawDates].sort()[0] || todayStr()) : daysAgo(period);
-  const dates = continuousBuckets(rangeStart, groupBy);
+  const rangeStart = period === "custom" ? customStart :
+    (period === "all" ? ([...allRawDates].sort()[0] || todayStr()) : daysAgo(period));
+  const rangeEnd = period === "custom" ? customEnd : todayStr();
+  const dates = continuousBuckets(rangeStart, groupBy, rangeEnd);
 
   const datasets = keys.map(k => {
     const byBucket = bucketedSeries(k);
@@ -294,6 +323,7 @@ function renderOverviewKPIs() {
   const cpl = platformConversions ? spend / platformConversions : null;
   const sessions = totalOf("ga_sessions");
   const crmLeads = totalOf("crm_leads");
+  const whatsappLeads = totalOf("crm_whatsapp_leads");
   const newCustomers = totalOf("crm_new_customers");
   const cac = newCustomers ? spend / newCustomers : null;
 
@@ -302,6 +332,7 @@ function renderOverviewKPIs() {
     { name: "Meta Ads", val: fmtEUR.format(metaSpend) },
     { name: "Google Ads", val: fmtEUR.format(googleSpend) },
     { name: "Lead CRM", val: fmt(crmLeads) },
+    { name: "WhatsApp diretti", val: fmt(whatsappLeads) },
     { name: "Nuovi clienti", val: fmt(newCustomers) },
     { name: "CAC blended", val: cac == null ? "—" : fmtEUR.format(cac) },
     { name: "Conv. piattaforme", val: fmt(platformConversions) },
@@ -319,7 +350,8 @@ function renderAll() {
   renderPeriodTabs();
   renderGroupTabs($("group-tabs"), groupBy, (g) => { groupBy = g; renderAll(); });
   renderModeButtons();
-  $("pill-range").textContent = `periodo: ${period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni"}`;
+  $("pill-range").textContent = `periodo: ${period === "custom" ? customStart + " → " + customEnd :
+    (period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni")}`;
   renderOverviewKPIs();
   renderChart();
   renderTotals();
@@ -341,6 +373,9 @@ let homeCharts = { analytics: null, cpl: null, campaigns: null };
 let homeCampMetric = "spend";
 
 function inCurrentPeriod(rows) {
+  if (period === "custom") {
+    return rows.filter(r => r.date >= customStart && r.date <= customEnd);
+  }
   const since = period === "all" ? null : daysAgo(period);
   return rows.filter(r => !since || r.date >= since);
 }
@@ -501,7 +536,8 @@ const LAST_COOKIE = "compare_last";
 let PRESETS = [];
 
 function currentConfig() {
-  return { selected: [...selected], period, groupBy, mode, events: $("chk-events").checked };
+  return { selected: [...selected], period, customStart, customEnd,
+           groupBy, mode, events: $("chk-events").checked };
 }
 
 function applyConfig(cfg) {
@@ -512,6 +548,10 @@ function applyConfig(cfg) {
     if (valid.length) selected = new Set(valid);
   }
   if (cfg.period !== undefined) period = cfg.period;
+  customStart = cfg.customStart || "";
+  customEnd = cfg.customEnd || "";
+  $("f-start").value = customStart;
+  $("f-end").value = customEnd;
   if (cfg.groupBy) groupBy = cfg.groupBy;
   if (cfg.mode) mode = cfg.mode;
   if (cfg.events !== undefined) $("chk-events").checked = !!cfg.events;
