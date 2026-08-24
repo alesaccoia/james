@@ -1,0 +1,156 @@
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e0e11;
+  --surface: #141419;
+  --ink: #eceae4;
+  --dim: #a6a3a9;
+  --accent: #ff4a2b;
+  --accent-2: #5aa9ff;
+  --line: rgba(236, 234, 228, .20);
+  --line-soft: rgba(236, 234, 228, .09);
+  --hover: rgba(236, 234, 228, .05);
+  --b1: 14 14 17;
+  --b2: 20 20 25;
+  --b3: 28 28 34;
+  --bc: 236 234 228;
+  --p: 255 74 43;
+  --pc: 14 14 17;
+  --s: 90 169 255;
+  --sc: 14 14 17;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f2ed;
+  --surface: #faf9f5;
+  --ink: #16161a;
+  --dim: #77746c;
+  --accent: #c8341a;
+  --accent-2: #1d4ed8;
+  --line: rgba(22, 22, 26, .20);
+  --line-soft: rgba(22, 22, 26, .09);
+  --hover: rgba(22, 22, 26, .05);
+  --b1: 244 242 237;
+  --b2: 250 249 245;
+  --b3: 232 229 222;
+  --bc: 22 22 26;
+  --p: 200 52 26;
+  --pc: 244 242 237;
+  --s: 29 78 216;
+  --sc: 244 242 237;
+}
+
+html { background: var(--bg); }
+body {
+  background: var(--bg) !important;
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: -.01em;
+}
+
+.navbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  min-height: 4.25rem;
+  background: color-mix(in srgb, var(--bg) 94%, transparent) !important;
+  border-bottom: 1px solid var(--line);
+  box-shadow: none !important;
+  backdrop-filter: blur(14px);
+}
+
+.james-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .72rem;
+  margin-right: .65rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+.james-glyph {
+  width: 1.9rem;
+  height: 1.9rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--ink);
+}
+.james-glyph span { width: .7rem; height: .7rem; background: var(--accent); }
+.james-brand-copy { display: grid; line-height: 1; }
+.james-brand-copy strong { font-size: 1.12rem; font-weight: 560; letter-spacing: -.04em; }
+.james-brand-copy small {
+  margin-top: .27rem;
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .55rem;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
+h1, h2, h3, h4 { color: var(--ink); font-weight: 480 !important; letter-spacing: -.035em; }
+a { text-underline-offset: 3px; }
+
+.btn, .tab, .badge, .input, .select, .textarea, .file-input {
+  border-radius: 0 !important;
+}
+.btn, .tab, .menu, .badge, label, th {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .045em;
+}
+.btn {
+  min-height: 2.25rem;
+  border-color: var(--line) !important;
+  box-shadow: none !important;
+  text-transform: uppercase;
+  font-size: .69rem;
+}
+.btn:hover { background: var(--hover) !important; border-color: var(--ink) !important; }
+.btn-active, .tab-active, .btn-primary {
+  background: var(--ink) !important;
+  border-color: var(--ink) !important;
+  color: var(--bg) !important;
+}
+.james-theme-toggle { min-width: 4.6rem; color: var(--accent); }
+
+.card, .stats, .stat, .alert, .dropdown-content, .modal-box, .collapse {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+.card, .stats, .alert, .modal-box, .collapse {
+  background: var(--surface) !important;
+  border: 1px solid var(--line-soft);
+}
+.card-title { font-weight: 480 !important; }
+.stat + .stat { border-color: var(--line-soft); }
+.stat-title, .text-base-content\/60, .opacity-60, .opacity-70 { color: var(--dim); }
+.stat-value { color: var(--ink); font-weight: 480; letter-spacing: -.045em; }
+
+.dropdown-content {
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+}
+.menu li > a { border-radius: 0; }
+.menu li > a:hover { background: var(--hover); color: var(--accent); }
+
+.input, .select, .textarea, .file-input {
+  background: transparent !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+  outline: none !important;
+}
+.input:focus, .select:focus, .textarea:focus { border-color: var(--accent) !important; }
+.tabs { border-color: var(--line); }
+.tab { text-transform: uppercase; font-size: .68rem; }
+
+.table { background: transparent; }
+.table :where(th, td) { border-color: var(--line-soft); }
+.table th { color: var(--dim); font-size: .66rem; text-transform: uppercase; }
+.table tbody tr:hover { background: var(--hover) !important; }
+
+footer { border-top: 1px solid var(--line-soft); color: var(--dim); }
+
+@media (max-width: 767px) {
+  .navbar > div { align-items: center; }
+  .james-brand-copy small { display: none; }
+  .james-brand { margin-right: .2rem; }
+}
