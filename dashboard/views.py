@@ -542,12 +542,21 @@ def _crm_lead_source_series(source_slug):
     return [{'date': day, 'value': value} for day, value in sorted(totals.items())]
 
 
+def _sum_series(*series):
+    totals = defaultdict(float)
+    for points in series:
+        for point in points:
+            totals[point['date']] += point['value']
+    return [{'date': day, 'value': value} for day, value in sorted(totals.items())]
+
+
 # Registry of comparable metrics across every connected source. Each entry
 # knows how to build its own daily {date, value} series; the compare view
 # just lets the user pick any combination to overlay on one chart. Add an
 # entry here whenever a new source/metric should be selectable for
 # cross-channel comparison.
 METRIC_INFO = {
+    'paid_spend': ('Spesa paid totale', 'Paid media', 'eur'),
     'fb_spend': ('Spesa Meta Ads', 'Meta Ads', 'eur'),
     'fb_impressions': ('Impression Meta Ads', 'Meta Ads', 'count'),
     'fb_clicks': ('Click Meta Ads', 'Meta Ads', 'count'),
@@ -563,7 +572,7 @@ METRIC_INFO = {
     'ga_leads': ('Lead generati (GA4)', 'Google Analytics', 'count'),
     'crm_leads': ('Lead CRM', 'WUNDT CRM', 'count'),
     'crm_whatsapp_leads': ('Lead WhatsApp diretti', 'WUNDT CRM', 'count'),
-    'crm_new_customers': ('Nuovi clienti', 'WUNDT CRM', 'count'),
+    'crm_new_customers': ('Conversioni (nuovi clienti)', 'WUNDT CRM', 'count'),
     'crm_revenue': ('Incassi', 'WUNDT CRM', 'eur'),
 }
 
@@ -591,6 +600,7 @@ def _build_metrics():
                               for d in crm_daily],
         'crm_revenue': [{'date': d['date'], 'value': d['revenue_eur']} for d in crm_daily],
     }
+    series['paid_spend'] = _sum_series(series['fb_spend'], series['gads_spend'])
     return {key: {'label': info[0], 'source': info[1], 'unit': info[2],
                   'series': series[key]} for key, info in METRIC_INFO.items()}
 
@@ -645,7 +655,7 @@ def data_home(request):
         date_s = str(d.get('date_start') or '')[:10]
         if not date_s:
             continue
-        name = d.get('campaign_name') or '(senza nome)'
+        name = f"Meta · {d.get('campaign_name') or '(senza nome)'}"
         spend, leads = _num(d.get('spend')), _fb_action_value(d, 'lead')
         per_campaign[name][date_s]['spend'] += spend
         per_campaign[name][date_s]['leads'] += leads

@@ -146,7 +146,7 @@ const colorOf = (key) => PALETTE[METRIC_KEYS.indexOf(key) % PALETTE.length];
 
 let SERIES = {}; // key -> [{date, value}]
 let EVENTS = [];
-let selected = new Set(METRIC_KEYS.slice(0, 3));
+let selected = new Set(["paid_spend", "crm_leads", "crm_new_customers", "crm_whatsapp_leads"]);
 let period = 30;
 let customStart = "";
 let customEnd = "";
@@ -444,12 +444,16 @@ function renderHomeCampaigns() {
     b.onclick = () => { homeCampMetric = b.dataset.m; renderHomeCampaigns(); };
   });
 
-  const camps = (HOME.campaigns || [])
+  const ranked = (HOME.campaigns || [])
     .map(c => ({ ...c, series: inCurrentPeriod(c.series) }))
     .filter(c => c.series.some(p => p[homeCampMetric] > 0))
     .sort((a, b) => b.series.reduce((s, p) => s + p[homeCampMetric], 0) -
-                    a.series.reduce((s, p) => s + p[homeCampMetric], 0))
-    .slice(0, 6);
+                    a.series.reduce((s, p) => s + p[homeCampMetric], 0));
+  const camps = [
+    ...ranked.filter(c => c.name.startsWith("Meta ·")).slice(0, 4),
+    ...ranked.filter(c => c.name.startsWith("Google ·")).slice(0, 4),
+    ...ranked.filter(c => !c.name.includes(" · ")).slice(0, 2),
+  ];
   if (!camps.length) return;
 
   const dates = [...new Set(camps.flatMap(c => c.series.map(p => p.date)))].sort();
@@ -532,7 +536,7 @@ async function loadHome() {
 // the default for anything they don't mention.
 
 const PRESETS_URL = "/data/compare-presets.json";
-const LAST_COOKIE = "compare_last";
+const LAST_COOKIE = "compare_last_v2";
 let PRESETS = [];
 
 function currentConfig() {
