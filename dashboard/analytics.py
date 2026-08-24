@@ -20,15 +20,24 @@ def _money(value):
 
 def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
     """Compute LTV, cohorts, campaign revenue and recovery without exposing IDs."""
-    events = SubjectEvent.objects.all().order_by('occurred_at', 'pk')
+    all_events = SubjectEvent.objects.all().order_by('occurred_at', 'pk')
     if source:
-        events = events.filter(source__slug=source)
+        all_events = all_events.filter(source__slug=source)
+    events = all_events
     if start:
         events = events.filter(occurred_at__date__gte=start)
     if end:
         events = events.filter(occurred_at__date__lte=end)
     subjects = defaultdict(lambda: {'first': None, 'purchases': [], 'messages': []})
     campaigns = defaultdict(lambda: {'revenue': Decimal(0), 'purchases': 0, 'subjects': set()})
+    lead_campaigns = defaultdict(int)
+    campaign_touches = defaultdict(list)
+    for touch in all_events.filter(event_type='lead_created').iterator():
+        campaign = (touch.dimensions.get('marketing.campaign_id') or
+                    touch.dimensions.get('marketing.utm_campaign'))
+        if campaign and touch.external_subject_id:
+            campaign_touches[touch.external_subject_id].append(
+                (touch.occurred_at, campaign))
     daily = defaultdict(lambda: {'leads': 0, 'purchases': 0, 'revenue': Decimal(0)})
     totals = defaultdict(int)
     revenue = Decimal(0)
@@ -37,6 +46,10 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
         day = event.occurred_at.date().isoformat()
         if event.event_type == 'lead_created':
             daily[day]['leads'] += 1
+            lead_campaign = (event.dimensions.get('marketing.campaign_id') or
+                             event.dimensions.get('marketing.utm_campaign') or
+                             'unattributed')
+            lead_campaigns[lead_campaign] += 1
         subject = event.external_subject_id
         if subject:
             bucket = subjects[subject]
@@ -53,7 +66,13 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
         if subject:
             subjects[subject]['purchases'].append((event.occurred_at, value))
         campaign = (event.dimensions.get('marketing.campaign_id') or
-                    event.dimensions.get('marketing.utm_campaign') or 'unattributed')
+                    event.dimensions.get('marketing.utm_campaign'))
+        if not campaign and subject:
+            previous = [item for item in campaign_touches.get(subject, [])
+                        if item[0] <= event.occurred_at]
+            if previous:
+                campaign = previous[-1][1]
+        campaign = campaign or 'unattributed'
         campaigns[campaign]['revenue'] += value
         campaigns[campaign]['purchases'] += 1
         if subject:
@@ -110,6 +129,9 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
                    'revenue_eur': _money(value['revenue'])}
                   for key, value in sorted(daily.items())],
         'attribution': {
+            'attributed_leads': sum(value for key, value in lead_campaigns.items()
+                                    if key != 'unattributed'),
+            'unattributed_leads': lead_campaigns['unattributed'],
             'attributed_purchases': sum(value['purchases'] for key, value in campaigns.items()
                                         if key != 'unattributed'),
             'unattributed_purchases': campaigns['unattributed']['purchases'],
@@ -117,10 +139,13 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
                                                   if key != 'unattributed'), Decimal(0))),
             'unattributed_revenue_eur': _money(campaigns['unattributed']['revenue']),
         },
-        'campaigns': sorted(({'campaign': key, 'revenue_eur': _money(value['revenue']),
-                              'purchases': value['purchases'], 'customers': len(value['subjects'])}
-                             for key, value in campaigns.items()),
-                            key=lambda row: -row['revenue_eur']),
+        'campaigns': sorted(({'campaign': key,
+                              'revenue_eur': _money(campaigns[key]['revenue']),
+                              'leads': lead_campaigns[key],
+                              'purchases': campaigns[key]['purchases'],
+                              'customers': len(campaigns[key]['subjects'])}
+                             for key in set(campaigns) | set(lead_campaigns)),
+                            key=lambda row: (-row['revenue_eur'], -row['leads'])),
         'cohorts': [{'month': key, 'subjects': len(value['subjects']),
                      'customers': len(value['customers']), 'revenue_eur': _money(value['revenue']),
                      'average_ltv_eur': _money(value['revenue'] / len(value['customers']))

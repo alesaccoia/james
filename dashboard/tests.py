@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -187,6 +188,37 @@ class CommercialMetricsTests(TestCase):
         self.client.force_login(User.objects.create_user('analyst', password='test'))
         response = self.client.get('/conversioni/')
         self.assertContains(response, 'Conversioni')
+
+    def test_purchase_inherits_latest_prior_lead_campaign(self):
+        self.event('lead-a', 'opaque-a', 'lead_created',
+                   '2026-01-01T10:00:00Z', campaign='cmp-first')
+        self.event('lead-b', 'opaque-a', 'lead_created',
+                   '2026-02-01T10:00:00Z', campaign='cmp-latest')
+        self.event('buy-a', 'opaque-a', 'purchase',
+                   '2026-03-01T10:00:00Z', revenue='90')
+
+        result = commercial_metrics(source='crm', start=date(2026, 3, 1))
+
+        latest = next(row for row in result['campaigns']
+                      if row['campaign'] == 'cmp-latest')
+        self.assertEqual(latest['purchases'], 1)
+        self.assertEqual(latest['revenue_eur'], 90)
+        self.assertEqual(result['attribution']['attributed_purchases'], 1)
+        self.assertEqual(result['attribution']['unattributed_purchases'], 0)
+
+    def test_lead_attribution_is_reported_even_without_purchases(self):
+        self.event('lead-a', 'opaque-a', 'lead_created',
+                   '2026-01-01T10:00:00Z', campaign='cmp-a')
+        self.event('lead-b', 'opaque-b', 'lead_created',
+                   '2026-01-02T10:00:00Z')
+
+        result = commercial_metrics(source='crm')
+
+        self.assertEqual(result['attribution']['attributed_leads'], 1)
+        self.assertEqual(result['attribution']['unattributed_leads'], 1)
+        campaign = next(row for row in result['campaigns']
+                        if row['campaign'] == 'cmp-a')
+        self.assertEqual(campaign['leads'], 1)
 
 
 @override_settings(PED_SERVICE_TOKEN='ped-test-token')
