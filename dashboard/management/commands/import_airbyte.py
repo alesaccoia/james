@@ -48,6 +48,18 @@ NATURAL_KEYS = {
     'ga_demographic_gender_report': lambda d: f"{d.get('date')}|{d.get('userGender')}",
     'ga_demographic_country_report': lambda d: f"{d.get('date')}|{d.get('country')}",
     'ga_demographic_city_report': lambda d: f"{d.get('date')}|{d.get('city')}",
+    'gads_campaign': lambda d: (
+        f"{d.get('campaign_id')}|{d.get('segments_date')}|"
+        f"{d.get('segments_hour')}|{d.get('segments_ad_network_type')}"),
+    'gads_campaign_budget': lambda d: (
+        f"{d.get('customer_id')}|{d.get('campaign_budget_id')}|"
+        f"{d.get('segments_date')}|"
+        f"{d.get('segments_budget_campaign_association_status_campaign')}|"
+        f"{d.get('segments_budget_campaign_association_status_status')}"),
+    'gads_ad_performance': lambda d: (
+        f"{d.get('ad_group_id')}|{d.get('ad_group_ad_ad_id')}|"
+        f"{d.get('segments_date')}|{d.get('segments_ad_network_type')}|"
+        f"{d.get('segments_device')}"),
     'mentor_leads': lambda d: d.get('id'),
     'mentor_lead_status_events': lambda d: d.get('id'),
     'mentor_meta_pages_page': lambda d: d.get('id'),
@@ -97,6 +109,9 @@ REFRESHABLE_STREAMS = {
     'ga_demographic_gender_report',
     'ga_demographic_country_report',
     'ga_demographic_city_report',
+    'gads_campaign',
+    'gads_campaign_budget',
+    'gads_ad_performance',
 }
 
 META_COLS = {'_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_meta', '_airbyte_generation_id'}

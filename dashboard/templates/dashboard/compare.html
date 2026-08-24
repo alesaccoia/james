@@ -1,12 +1,12 @@
 {% extends 'dashboard/base.html' %}
-{% block title %}Home{% endblock %}
+{% block title %}Dashboard{% endblock %}
 {% block nav_compare %}btn-active{% endblock %}
 {% block content %}
 
 <div class="flex flex-wrap items-center gap-3 mb-6">
   <div>
-    <h1 class="text-2xl font-bold">Panoramica</h1>
-    <p class="text-sm opacity-60">Tutte le fonti insieme, in un colpo d'occhio</p>
+    <h1 class="text-2xl font-bold">Dashboard</h1>
+    <p class="text-sm opacity-60">I principali segnali di marketing e conversione, in un colpo d'occhio</p>
   </div>
   <div class="grow"></div>
   <div class="badge badge-lg badge-outline" id="pill-range">periodo: —</div>
@@ -25,14 +25,14 @@
     <div class="card bg-base-100 shadow h-fit">
       <div class="card-body">
         <h2 class="card-title text-base">Traffico del sito</h2>
-        <p class="text-sm opacity-60">Sessioni e utenti, ultimi 30 giorni.</p>
+        <p class="text-sm opacity-60">Sessioni e utenti nel periodo selezionato.</p>
         <div class="h-64 relative"><canvas id="home-analytics"></canvas></div>
       </div>
     </div>
     <div class="card bg-base-100 shadow h-fit">
       <div class="card-body">
         <h2 class="card-title text-base">Costo per lead</h2>
-        <p class="text-sm opacity-60">CPL giornaliero (spesa ÷ lead del giorno), ultimi 30 giorni.</p>
+        <p class="text-sm opacity-60">Costo giornaliero per conversione dichiarata dalle piattaforme.</p>
         <div class="h-64 relative"><canvas id="home-cpl"></canvas></div>
       </div>
     </div>
@@ -43,12 +43,12 @@
       <div class="flex flex-wrap items-center gap-3">
         <div>
           <h2 class="card-title text-base">Andamento giornaliero per campagna</h2>
-          <p class="text-sm opacity-60">Le campagne con più spesa negli ultimi 30 giorni.</p>
+          <p class="text-sm opacity-60">Le campagne Meta e Google con più spesa nel periodo.</p>
         </div>
         <div class="grow"></div>
         <div class="join" id="home-camp-metric">
           <button class="btn btn-xs join-item" data-m="spend">Spesa</button>
-          <button class="btn btn-xs join-item" data-m="leads">Lead</button>
+          <button class="btn btn-xs join-item" data-m="leads">Conversioni</button>
         </div>
       </div>
       <div class="h-72 relative"><canvas id="home-campaigns"></canvas></div>
@@ -285,20 +285,28 @@ function totalOf(key) {
 }
 
 function renderOverviewKPIs() {
-  const spend = totalOf("fb_spend");
+  const metaSpend = totalOf("fb_spend");
+  const googleSpend = totalOf("gads_spend");
+  const spend = metaSpend + googleSpend;
   const fbLeads = totalOf("fb_leads");
-  const cpl = fbLeads ? spend / fbLeads : null;
+  const googleConversions = totalOf("gads_conversions");
+  const platformConversions = fbLeads + googleConversions;
+  const cpl = platformConversions ? spend / platformConversions : null;
   const sessions = totalOf("ga_sessions");
-  const gaLeads = totalOf("ga_leads");
-  const users = totalOf("ga_users");
+  const crmLeads = totalOf("crm_leads");
+  const newCustomers = totalOf("crm_new_customers");
+  const cac = newCustomers ? spend / newCustomers : null;
 
   const defs = [
-    { name: "Spesa Meta Ads", val: fmtEUR.format(spend) },
-    { name: "Lead Meta Ads", val: fmt(fbLeads) },
-    { name: "CPL medio", val: cpl == null ? "—" : new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR", minimumFractionDigits: 2 }).format(cpl) },
+    { name: "Spesa paid totale", val: fmtEUR.format(spend) },
+    { name: "Meta Ads", val: fmtEUR.format(metaSpend) },
+    { name: "Google Ads", val: fmtEUR.format(googleSpend) },
+    { name: "Lead CRM", val: fmt(crmLeads) },
+    { name: "Nuovi clienti", val: fmt(newCustomers) },
+    { name: "CAC blended", val: cac == null ? "—" : fmtEUR.format(cac) },
+    { name: "Conv. piattaforme", val: fmt(platformConversions) },
+    { name: "Costo / conv.", val: cpl == null ? "—" : fmtEUR.format(cpl) },
     { name: "Sessioni sito", val: fmt(sessions) },
-    { name: "Utenti sito", val: fmt(users) },
-    { name: "Lead generati (GA4)", val: fmt(gaLeads) },
   ];
   $("overview-kpis").innerHTML = defs.map(d => `
     <div class="stat">
@@ -315,6 +323,7 @@ function renderAll() {
   renderOverviewKPIs();
   renderChart();
   renderTotals();
+  renderHome();
   // Every render is a settled state worth remembering, so reopening the page
   // lands exactly where it was left.
   if (typeof rememberCurrent === "function") rememberCurrent();
@@ -331,14 +340,14 @@ let HOME = null;
 let homeCharts = { analytics: null, cpl: null, campaigns: null };
 let homeCampMetric = "spend";
 
-function last30(rows) {
-  const since = daysAgo(30);
-  return rows.filter(r => r.date >= since);
+function inCurrentPeriod(rows) {
+  const since = period === "all" ? null : daysAgo(period);
+  return rows.filter(r => !since || r.date >= since);
 }
 
 function renderHomeAnalytics() {
   if (homeCharts.analytics) homeCharts.analytics.destroy();
-  const rows = last30(HOME.analytics || []);
+  const rows = inCurrentPeriod(HOME.analytics || []);
   if (!rows.length) return;
   homeCharts.analytics = new Chart($("home-analytics"), {
     type: "line",
@@ -362,7 +371,7 @@ function renderHomeAnalytics() {
 
 function renderHomeCpl() {
   if (homeCharts.cpl) homeCharts.cpl.destroy();
-  const rows = last30(HOME.cpl || []);
+  const rows = inCurrentPeriod(HOME.cpl || []);
   if (!rows.length) return;
   homeCharts.cpl = new Chart($("home-cpl"), {
     type: "line",
@@ -400,10 +409,11 @@ function renderHomeCampaigns() {
     b.onclick = () => { homeCampMetric = b.dataset.m; renderHomeCampaigns(); };
   });
 
-  const since = daysAgo(30);
   const camps = (HOME.campaigns || [])
-    .map(c => ({ ...c, series: c.series.filter(p => p.date >= since) }))
+    .map(c => ({ ...c, series: inCurrentPeriod(c.series) }))
     .filter(c => c.series.some(p => p[homeCampMetric] > 0))
+    .sort((a, b) => b.series.reduce((s, p) => s + p[homeCampMetric], 0) -
+                    a.series.reduce((s, p) => s + p[homeCampMetric], 0))
     .slice(0, 6);
   if (!camps.length) return;
 

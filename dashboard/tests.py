@@ -249,6 +249,11 @@ class CommercialMetricsTests(TestCase):
             stream='fb_ads_insights', ab_id='spend-a',
             data={'date_start': '2026-01-01', 'spend': 40,
                   'campaign_name': 'cmp-a'})
+        AirbyteRecord.objects.create(
+            stream='gads_campaign', ab_id='google-spend-a',
+            data={'segments_date': '2026-01-02',
+                  'metrics_cost_micros': 10_000_000,
+                  'campaign_name': 'cmp-google'})
 
         result = performance_metrics(source='crm', start='2026-01-01',
                                      end='2026-01-31')
@@ -256,7 +261,8 @@ class CommercialMetricsTests(TestCase):
         self.assertEqual(result['kpis']['leads'], 1)
         self.assertEqual(result['kpis']['new_customers'], 1)
         self.assertEqual(result['kpis']['purchases'], 2)
-        self.assertEqual(result['kpis']['cac_eur'], 40)
+        self.assertEqual(result['kpis']['spend_eur'], 50)
+        self.assertEqual(result['kpis']['cac_eur'], 50)
         self.assertEqual(result['kpis']['average_realized_ltv_eur'], 150)
         self.assertEqual(result['funnel'][-1]['count'], 1)
         self.assertEqual(sum(row['new_customers'] for row in result['daily']), 1)

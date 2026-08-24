@@ -1,6 +1,6 @@
 # James
 
-Dashboard marketing standalone: legge i dati sincronizzati da Airbyte (Facebook Marketing, GA4, ...) e li mostra riuniti in un'unica vista — spesa, impression, click, CTR, CPC per canale e per campagna.
+Dashboard marketing standalone: legge i dati sincronizzati da Airbyte (Facebook Marketing, Google Ads, GA4, ...) e li mostra riuniti in un'unica vista — spesa, impression, click, conversioni e KPI CRM per canale e per campagna.
 
 Progetto indipendente, riutilizzabile per altri progetti/clienti: nessuna dipendenza da altre app.
 
@@ -39,6 +39,8 @@ Airbyte scrive tabelle tipizzate (Destinations V2) nel database `airbyte_raw`. I
 ```
 
 Da lanciare manualmente dopo ogni sync Airbyte (nessun cron installato di default).
+
+In produzione la sorgente Airbyte `Google Ads` sincronizza ogni sei ore gli stream `campaign`, `campaign_budget` e `ad_performance` verso le tabelle `gads_*` di `airbyte_raw`. JAMES non usa credenziali Google Ads e non interroga direttamente l'API: importa esclusivamente il landing Airbyte.
 
 ## Aggiungere un nuovo canale/stream
 

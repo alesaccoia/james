@@ -459,6 +459,15 @@ def _daily_series(stream, date_field, value_field, ga_dates=False, agg='sum'):
     return [{'date': d, 'value': totals[d]} for d in sorted(totals)]
 
 
+def _google_ads_series(value_field, divisor=1):
+    totals = defaultdict(float)
+    for d in _stream_rows('gads_campaign'):
+        date_s = str(d.get('segments_date') or '')[:10]
+        if date_s:
+            totals[date_s] += _num(d.get(value_field)) / divisor
+    return [{'date': d, 'value': totals[d]} for d in sorted(totals)]
+
+
 def _fb_lead_series():
     totals = defaultdict(float)
     for d in _stream_rows('fb_ads_insights'):
@@ -487,6 +496,8 @@ def _event_series(event_name):
 # entry here whenever a new source/metric should be selectable for
 # cross-channel comparison.
 def _build_metrics():
+    crm = performance_metrics()
+    crm_daily = crm.get('daily', [])
     return {
         'fb_spend': {'label': 'Spesa Meta Ads', 'source': 'Meta Ads', 'unit': 'eur',
                      'series': _daily_series('fb_ads_insights', 'date_start', 'spend')},
@@ -496,6 +507,14 @@ def _build_metrics():
                       'series': _daily_series('fb_ads_insights', 'date_start', 'clicks')},
         'fb_leads': {'label': 'Lead Meta Ads (Instant Form)', 'source': 'Meta Ads', 'unit': 'count',
                      'series': _fb_lead_series()},
+        'gads_spend': {'label': 'Spesa Google Ads', 'source': 'Google Ads', 'unit': 'eur',
+                       'series': _google_ads_series('metrics_cost_micros', 1_000_000)},
+        'gads_impressions': {'label': 'Impression Google Ads', 'source': 'Google Ads', 'unit': 'count',
+                             'series': _google_ads_series('metrics_impressions')},
+        'gads_clicks': {'label': 'Click Google Ads', 'source': 'Google Ads', 'unit': 'count',
+                        'series': _google_ads_series('metrics_clicks')},
+        'gads_conversions': {'label': 'Conversioni Google Ads', 'source': 'Google Ads', 'unit': 'count',
+                             'series': _google_ads_series('metrics_conversions')},
         'ga_sessions': {'label': 'Sessioni sito', 'source': 'Google Analytics', 'unit': 'count',
                         'series': _daily_series('ga_website_overview', 'date', 'sessions', ga_dates=True)},
         'ga_users': {'label': 'Utenti totali', 'source': 'Google Analytics', 'unit': 'count',
@@ -506,12 +525,25 @@ def _build_metrics():
                          'series': _daily_series('ga_website_overview', 'date', 'screenPageViews', ga_dates=True)},
         'ga_leads': {'label': 'Lead generati (GA4)', 'source': 'Google Analytics', 'unit': 'count',
                      'series': _event_series('generate_lead')},
+        'crm_leads': {'label': 'Lead CRM', 'source': 'WUNDT CRM', 'unit': 'count',
+                      'series': [{'date': d['date'], 'value': d['leads']} for d in crm_daily]},
+        'crm_new_customers': {'label': 'Nuovi clienti', 'source': 'WUNDT CRM', 'unit': 'count',
+                              'series': [{'date': d['date'], 'value': d['new_customers']}
+                                         for d in crm_daily]},
+        'crm_revenue': {'label': 'Incassi', 'source': 'WUNDT CRM', 'unit': 'eur',
+                        'series': [{'date': d['date'], 'value': d['revenue_eur']}
+                                   for d in crm_daily]},
     }
 
 
 @login_required
 def help_page(request):
     return render(request, 'dashboard/help.html')
+
+
+@login_required
+def dashboard_redirect(request):
+    return redirect('dashboard:compare')
 
 
 @login_required
@@ -562,6 +594,19 @@ def data_home(request):
         daily[date_s]['spend'] += spend
         daily[date_s]['leads'] += leads
         daily[date_s]['impressions'] += _num(d.get('impressions'))
+
+    for d in _stream_rows('gads_campaign'):
+        date_s = str(d.get('segments_date') or '')[:10]
+        if not date_s:
+            continue
+        name = f"Google · {d.get('campaign_name') or '(senza nome)'}"
+        spend = _num(d.get('metrics_cost_micros')) / 1_000_000
+        conversions = _num(d.get('metrics_conversions'))
+        per_campaign[name][date_s]['spend'] += spend
+        per_campaign[name][date_s]['leads'] += conversions
+        daily[date_s]['spend'] += spend
+        daily[date_s]['leads'] += conversions
+        daily[date_s]['impressions'] += _num(d.get('metrics_impressions'))
 
     campaigns = [{
         'name': name,

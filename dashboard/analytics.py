@@ -281,6 +281,16 @@ def performance_metrics(source='wundt', start=None, end=None):
         spend += value
         spend_by_campaign[data.get('campaign_name') or '(senza nome)'] += value
 
+    for data in AirbyteRecord.objects.filter(
+            stream='gads_campaign').values_list('data', flat=True):
+        day = str(data.get('segments_date') or '')[:10]
+        if not day or not start_date.isoformat() <= day <= end_date.isoformat():
+            continue
+        value = _number(data.get('metrics_cost_micros')) / Decimal(1_000_000)
+        daily[day]['spend_eur'] += value
+        spend += value
+        spend_by_campaign[data.get('campaign_name') or '(senza nome)'] += value
+
     funnel = []
     previous = len(cohort)
     for rank, label in FUNNEL_STAGES:
