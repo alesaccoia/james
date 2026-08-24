@@ -5,8 +5,9 @@ from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils.dateparse import parse_datetime
 
-from .analytics import commercial_metrics
-from .models import AnalyticsSource, EditorialChange, FieldDefinition, SubjectEvent
+from .analytics import commercial_metrics, performance_metrics
+from .models import (AirbyteRecord, AnalyticsSource, EditorialChange,
+                     FieldDefinition, SubjectEvent)
 from .views import _resolve_tags, _spend_by_tag_dimension
 
 User = get_user_model()
@@ -231,6 +232,34 @@ class CommercialMetricsTests(TestCase):
         self.assertEqual(result['event_types']['lead_created'], 1)
         self.assertEqual(result['attribution']['attributed_leads'], 1)
         self.assertEqual(result['attribution']['unattributed_leads'], 0)
+
+    def test_performance_metrics_include_new_customers_spend_and_funnel(self):
+        self.event('lead-a', 'opaque-a', 'lead_created',
+                   '2026-01-01T10:00:00Z', campaign='cmp-a')
+        self.event('status-a', 'opaque-a', 'lead_status_changed',
+                   '2026-01-02T10:00:00Z')
+        status = SubjectEvent.objects.get(event_id='status-a')
+        status.dimensions = {'wundt.to_status': 'client_acquired'}
+        status.save(update_fields=['dimensions'])
+        self.event('buy-a', 'opaque-a', 'purchase',
+                   '2026-01-03T10:00:00Z', revenue='100')
+        self.event('buy-b', 'opaque-a', 'purchase',
+                   '2026-01-04T10:00:00Z', revenue='50')
+        AirbyteRecord.objects.create(
+            stream='fb_ads_insights', ab_id='spend-a',
+            data={'date_start': '2026-01-01', 'spend': 40,
+                  'campaign_name': 'cmp-a'})
+
+        result = performance_metrics(source='crm', start='2026-01-01',
+                                     end='2026-01-31')
+
+        self.assertEqual(result['kpis']['leads'], 1)
+        self.assertEqual(result['kpis']['new_customers'], 1)
+        self.assertEqual(result['kpis']['purchases'], 2)
+        self.assertEqual(result['kpis']['cac_eur'], 40)
+        self.assertEqual(result['kpis']['average_realized_ltv_eur'], 150)
+        self.assertEqual(result['funnel'][-1]['count'], 1)
+        self.assertEqual(sum(row['new_customers'] for row in result['daily']), 1)
 
 
 @override_settings(PED_SERVICE_TOKEN='ped-test-token')

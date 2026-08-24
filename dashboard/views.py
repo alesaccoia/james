@@ -10,7 +10,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
 
-from .analytics import commercial_metrics
+from .analytics import commercial_metrics, performance_metrics
 from .models import (AirbyteRecord, BudgetLine, BudgetPlan, ChannelCadence,
                      ComparePreset, ContentPiece, FunnelKPI, FunnelStage,
                      FunnelStageSource, MarketingEvent, Tag, TagDimension,
@@ -34,6 +34,14 @@ def commercial(request):
 @login_required
 def conversions(request):
     return render(request, 'dashboard/conversions.html')
+
+
+@login_required
+def data_performance_metrics(request):
+    return JsonResponse(performance_metrics(
+        source=request.GET.get('source') or 'wundt',
+        start=request.GET.get('start') or None,
+        end=request.GET.get('end') or None))
 
 # One entry per Airbyte stream we know how to turn into marketing KPIs.
 # Add a new entry here whenever a new source (Google Ads, TikTok Ads,
