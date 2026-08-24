@@ -30,6 +30,11 @@ def data_commercial_metrics(request):
 def commercial(request):
     return render(request, 'dashboard/commercial.html')
 
+
+@login_required
+def conversions(request):
+    return render(request, 'dashboard/conversions.html')
+
 # One entry per Airbyte stream we know how to turn into marketing KPIs.
 # Add a new entry here whenever a new source (Google Ads, TikTok Ads,
 # LinkedIn Ads...) starts flowing into AirbyteRecord — the dashboard picks

@@ -1,0 +1,45 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Conversioni{% endblock %}
+{% block nav_group_dati %}btn-active{% endblock %}
+{% block content %}
+<div class="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mb-6">
+  <div><h1 class="text-2xl font-bold">Conversioni</h1><p class="text-sm opacity-60">Lead, acquisti e ricavi aggregati ricevuti dai sistemi operativi. JAMES non conserva anagrafiche o contatti.</p></div>
+  <form id="filters" class="flex flex-wrap gap-2 items-end">
+    <label class="form-control"><span class="label-text text-xs">Dal</span><input id="start" type="date" class="input input-bordered input-sm"></label>
+    <label class="form-control"><span class="label-text text-xs">Al</span><input id="end" type="date" class="input input-bordered input-sm"></label>
+    <button class="btn btn-sm btn-primary" type="submit">Aggiorna</button>
+  </form>
+</div>
+<div id="loading" class="alert">Caricamento conversioni…</div>
+<div id="content" class="hidden space-y-6">
+  <div id="totals" class="stats stats-vertical md:stats-horizontal shadow w-full"></div>
+  <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+    <div class="card bg-base-100 shadow xl:col-span-2"><div class="card-body"><h2 class="card-title">Andamento</h2><div class="h-80"><canvas id="trend"></canvas></div></div></div>
+    <div class="card bg-base-100 shadow"><div class="card-body"><h2 class="card-title">Qualità attribuzione</h2><div id="attribution" class="space-y-3"></div></div></div>
+    <div class="card bg-base-100 shadow xl:col-span-3"><div class="card-body"><h2 class="card-title">Risultati per campagna</h2><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>Campagna</th><th>Clienti</th><th>Acquisti</th><th>Ricavi</th></tr></thead><tbody id="campaigns"></tbody></table></div></div></div>
+  </div>
+</div>
+<script>
+const eur = n => new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(n||0);
+const esc = v => String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let chart;
+async function loadConversions() {
+  const query = new URLSearchParams({source:'wundt'});
+  if (start.value) query.set('start', start.value);
+  if (end.value) query.set('end', end.value);
+  const response = await fetch('{% url "dashboard:data_commercial_metrics" %}?'+query);
+  if (!response.ok) throw new Error('Impossibile caricare i dati');
+  const data = await response.json(), t = data.totals, a = data.attribution;
+  totals.innerHTML = [['Lead',data.event_types.lead_created||0],['Acquisti',t.purchases],['Ricavi',eur(t.revenue_eur)],['Clienti',t.customers]].map(([k,v])=>`<div class="stat"><div class="stat-title">${k}</div><div class="stat-value text-2xl">${v}</div></div>`).join('');
+  const totalPurchases=a.attributed_purchases+a.unattributed_purchases, rate=totalPurchases?100*a.attributed_purchases/totalPurchases:0;
+  attribution.innerHTML=`<div><div class="flex justify-between text-sm"><span>Acquisti attribuiti</span><strong>${rate.toFixed(1)}%</strong></div><progress class="progress progress-primary w-full" value="${rate}" max="100"></progress></div><div class="stats stats-vertical shadow"><div class="stat"><div class="stat-title">Attribuiti</div><div class="stat-value text-xl">${a.attributed_purchases}</div><div class="stat-desc">${eur(a.attributed_revenue_eur)}</div></div><div class="stat"><div class="stat-title">Non attribuiti</div><div class="stat-value text-xl">${a.unattributed_purchases}</div><div class="stat-desc">${eur(a.unattributed_revenue_eur)}</div></div></div>`;
+  campaigns.innerHTML=data.campaigns.map(r=>`<tr><td>${esc(r.campaign)}</td><td>${r.customers}</td><td>${r.purchases}</td><td>${eur(r.revenue_eur)}</td></tr>`).join('')||'<tr><td colspan="4" class="opacity-60">Nessuna conversione nel periodo.</td></tr>';
+  if (chart) chart.destroy();
+  chart=new Chart(document.getElementById('trend'),{type:'bar',data:{labels:data.daily.map(r=>r.date),datasets:[{label:'Lead',data:data.daily.map(r=>r.leads),backgroundColor:'#93c5fd',yAxisID:'count'},{label:'Acquisti',data:data.daily.map(r=>r.purchases),backgroundColor:'#2563eb',yAxisID:'count'},{label:'Ricavi €',data:data.daily.map(r=>r.revenue_eur),type:'line',borderColor:'#16a34a',backgroundColor:'#16a34a',yAxisID:'revenue'}]},options:{responsive:true,maintainAspectRatio:false,scales:{count:{beginAtZero:true,position:'left'},revenue:{beginAtZero:true,position:'right',grid:{drawOnChartArea:false}}}}});
+  loading.classList.add('hidden'); content.classList.remove('hidden');
+}
+filters.addEventListener('submit',e=>{e.preventDefault();loadConversions().catch(showError)});
+function showError(error){loading.classList.remove('hidden');loading.textContent='Errore: '+error.message;}
+loadConversions().catch(showError);
+</script>
+{% endblock %}

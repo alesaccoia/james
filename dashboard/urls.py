@@ -19,6 +19,7 @@ urlpatterns = [
     path('data/commercial-metrics.json', views.data_commercial_metrics,
          name='data_commercial_metrics'),
     path('commerciale/', views.commercial, name='commercial'),
+    path('conversioni/', views.conversions, name='conversions'),
 
     path('meta-ads/', views.dashboard, name='dashboard'),
     path('meta-ads/data.json', views.data_marketing, name='data_marketing'),

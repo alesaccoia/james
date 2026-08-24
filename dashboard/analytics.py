@@ -29,10 +29,14 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
         events = events.filter(occurred_at__date__lte=end)
     subjects = defaultdict(lambda: {'first': None, 'purchases': [], 'messages': []})
     campaigns = defaultdict(lambda: {'revenue': Decimal(0), 'purchases': 0, 'subjects': set()})
+    daily = defaultdict(lambda: {'leads': 0, 'purchases': 0, 'revenue': Decimal(0)})
     totals = defaultdict(int)
     revenue = Decimal(0)
     for event in events.iterator():
         totals[event.event_type] += 1
+        day = event.occurred_at.date().isoformat()
+        if event.event_type == 'lead_created':
+            daily[day]['leads'] += 1
         subject = event.external_subject_id
         if subject:
             bucket = subjects[subject]
@@ -43,6 +47,8 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
         if event.event_type != 'purchase':
             continue
         value = _number(event.measures.get('commerce.revenue_eur'))
+        daily[day]['purchases'] += 1
+        daily[day]['revenue'] += value
         revenue += value
         if subject:
             subjects[subject]['purchases'].append((event.occurred_at, value))
@@ -100,6 +106,17 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
                    'mature_ltv_horizons_eur': horizons,
                    'repeat_customers': repeat, 'recovered_customers': recovered},
         'event_types': dict(sorted(totals.items())),
+        'daily': [{'date': key, 'leads': value['leads'], 'purchases': value['purchases'],
+                   'revenue_eur': _money(value['revenue'])}
+                  for key, value in sorted(daily.items())],
+        'attribution': {
+            'attributed_purchases': sum(value['purchases'] for key, value in campaigns.items()
+                                        if key != 'unattributed'),
+            'unattributed_purchases': campaigns['unattributed']['purchases'],
+            'attributed_revenue_eur': _money(sum((value['revenue'] for key, value in campaigns.items()
+                                                  if key != 'unattributed'), Decimal(0))),
+            'unattributed_revenue_eur': _money(campaigns['unattributed']['revenue']),
+        },
         'campaigns': sorted(({'campaign': key, 'revenue_eur': _money(value['revenue']),
                               'purchases': value['purchases'], 'customers': len(value['subjects'])}
                              for key, value in campaigns.items()),

@@ -1,11 +1,14 @@
 import json
 
+from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils.dateparse import parse_datetime
 
 from .analytics import commercial_metrics
 from .models import AnalyticsSource, EditorialChange, FieldDefinition, SubjectEvent
 from .views import _resolve_tags, _spend_by_tag_dimension
+
+User = get_user_model()
 
 
 class TagAttributionTests(SimpleTestCase):
@@ -171,8 +174,19 @@ class CommercialMetricsTests(TestCase):
         self.assertEqual(result['campaigns'][0]['campaign'], 'cmp-a')
         self.assertEqual(result['campaign_effects_30d'][0]['campaign'], 'winback')
         self.assertEqual(result['campaign_effects_30d'][0]['revenue_eur'], 100)
+        self.assertEqual(result['attribution']['attributed_purchases'], 3)
+        self.assertEqual(result['attribution']['unattributed_purchases'], 0)
+        self.assertEqual(result['daily'][0], {'date': '2026-01-01', 'leads': 1,
+                                              'purchases': 0, 'revenue_eur': 0.0})
         self.assertFalse(result['privacy']['row_level_subjects_returned'])
         self.assertNotIn('opaque-1', json.dumps(result))
+
+    def test_conversion_page_is_explicit_and_requires_login(self):
+        response = self.client.get('/conversioni/')
+        self.assertEqual(response.status_code, 302)
+        self.client.force_login(User.objects.create_user('analyst', password='test'))
+        response = self.client.get('/conversioni/')
+        self.assertContains(response, 'Conversioni')
 
 
 @override_settings(PED_SERVICE_TOKEN='ped-test-token')
