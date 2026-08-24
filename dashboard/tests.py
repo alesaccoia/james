@@ -220,6 +220,18 @@ class CommercialMetricsTests(TestCase):
                         if row['campaign'] == 'cmp-a')
         self.assertEqual(campaign['leads'], 1)
 
+    def test_duplicate_lead_event_for_same_subject_is_counted_once(self):
+        self.event('action-created', 'opaque-a', 'lead_created',
+                   '2026-01-01T09:59:00Z')
+        self.event('canonical-lead', 'opaque-a', 'lead_created',
+                   '2026-01-01T10:00:00Z', campaign='cmp-a')
+
+        result = commercial_metrics(source='crm')
+
+        self.assertEqual(result['event_types']['lead_created'], 1)
+        self.assertEqual(result['attribution']['attributed_leads'], 1)
+        self.assertEqual(result['attribution']['unattributed_leads'], 0)
+
 
 @override_settings(PED_SERVICE_TOKEN='ped-test-token')
 class EditorialCalendarApiTests(TestCase):

@@ -39,17 +39,25 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
             campaign_touches[touch.external_subject_id].append(
                 (touch.occurred_at, campaign))
     daily = defaultdict(lambda: {'leads': 0, 'purchases': 0, 'revenue': Decimal(0)})
+    lead_facts = {}
+    for lead_event in events.filter(event_type='lead_created').iterator():
+        key = lead_event.external_subject_id or f'event:{lead_event.pk}'
+        campaign = (lead_event.dimensions.get('marketing.campaign_id') or
+                    lead_event.dimensions.get('marketing.utm_campaign'))
+        fact = lead_facts.setdefault(key, {
+            'occurred_at': lead_event.occurred_at, 'campaign': campaign})
+        if lead_event.occurred_at < fact['occurred_at']:
+            fact['occurred_at'] = lead_event.occurred_at
+        if campaign:
+            fact['campaign'] = campaign
+    for fact in lead_facts.values():
+        daily[fact['occurred_at'].date().isoformat()]['leads'] += 1
+        lead_campaigns[fact['campaign'] or 'unattributed'] += 1
     totals = defaultdict(int)
     revenue = Decimal(0)
     for event in events.iterator():
         totals[event.event_type] += 1
         day = event.occurred_at.date().isoformat()
-        if event.event_type == 'lead_created':
-            daily[day]['leads'] += 1
-            lead_campaign = (event.dimensions.get('marketing.campaign_id') or
-                             event.dimensions.get('marketing.utm_campaign') or
-                             'unattributed')
-            lead_campaigns[lead_campaign] += 1
         subject = event.external_subject_id
         if subject:
             bucket = subjects[subject]
@@ -77,6 +85,7 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
         campaigns[campaign]['purchases'] += 1
         if subject:
             campaigns[campaign]['subjects'].add(subject)
+    totals['lead_created'] = len(lead_facts)
     paying = {key: value for key, value in subjects.items() if value['purchases']}
     repeat = recovered = 0
     cohorts = defaultdict(lambda: {'subjects': set(), 'customers': set(), 'revenue': Decimal(0)})
