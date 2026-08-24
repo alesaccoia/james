@@ -693,6 +693,24 @@ def data_home(request):
     # --- per-campaign daily spend/leads, plus a blended daily CPL
     per_campaign = defaultdict(lambda: defaultdict(lambda: {'spend': 0.0, 'leads': 0.0}))
     daily = defaultdict(lambda: {'spend': 0.0, 'leads': 0.0, 'impressions': 0.0})
+    campaign_performance = {}
+    performance_aliases = {}
+
+    def _performance_row(platform, campaign_id, campaign_name):
+        campaign_name = campaign_name or '(senza nome)'
+        key = f'{platform}:{campaign_id or campaign_name}'
+        row = campaign_performance.setdefault(key, {
+            'platform': platform, 'campaign': campaign_name,
+            'series': defaultdict(lambda: {
+                'spend': 0.0, 'impressions': 0.0, 'clicks': 0.0,
+                'platform_leads': 0.0, 'crm_leads': 0.0, 'customers': 0.0,
+            }),
+        })
+        for alias in (campaign_id, campaign_name):
+            if alias:
+                performance_aliases[(platform.lower(), str(alias).strip().lower())] = key
+        return row
+
     for d in _stream_rows('fb_ads_insights'):
         date_s = str(d.get('date_start') or '')[:10]
         if not date_s:
@@ -704,6 +722,11 @@ def data_home(request):
         daily[date_s]['spend'] += spend
         daily[date_s]['leads'] += leads
         daily[date_s]['impressions'] += _num(d.get('impressions'))
+        perf = _performance_row('Meta', d.get('campaign_id'), d.get('campaign_name'))['series'][date_s]
+        perf['spend'] += spend
+        perf['impressions'] += _num(d.get('impressions'))
+        perf['clicks'] += _num(d.get('clicks'))
+        perf['platform_leads'] += leads
 
     for d in _stream_rows('gads_campaign'):
         date_s = str(d.get('segments_date') or '')[:10]
@@ -717,6 +740,11 @@ def data_home(request):
         daily[date_s]['spend'] += spend
         daily[date_s]['leads'] += conversions
         daily[date_s]['impressions'] += _num(d.get('metrics_impressions'))
+        perf = _performance_row('Google Ads', d.get('campaign_id'), d.get('campaign_name'))['series'][date_s]
+        perf['spend'] += spend
+        perf['impressions'] += _num(d.get('metrics_impressions'))
+        perf['clicks'] += _num(d.get('metrics_clicks'))
+        perf['platform_leads'] += conversions
 
     campaigns = [{
         'name': name,
@@ -776,6 +804,22 @@ def data_home(request):
     for event_id, subject, occurred_at in purchases.iterator():
         key = subject or f'event:{event_id}'
         first_purchase[key] = min(occurred_at, first_purchase.get(key, occurred_at))
+
+    source_platform = {'meta': 'Meta', 'facebook-leads': 'Meta',
+                       'google': 'Google Ads', 'google_ads': 'Google Ads'}
+    for subject, fact in lead_facts.items():
+        dimensions = fact['dimensions']
+        source = (dimensions.get('marketing.attribution_source') or '').lower()
+        campaign = (dimensions.get('marketing.campaign_id') or
+                    dimensions.get('marketing.utm_campaign'))
+        platform = source_platform.get(source)
+        if not platform or not campaign:
+            continue
+        key = performance_aliases.get((platform.lower(), str(campaign).strip().lower()))
+        row = campaign_performance[key] if key else _performance_row(platform, None, campaign)
+        values = row['series'][fact['occurred_at'].date().isoformat()]
+        values['crm_leads'] += 1
+        values['customers'] += int(subject in first_purchase)
     conversion_breakdown = defaultdict(lambda: defaultdict(float))
     for subject, occurred_at in first_purchase.items():
         dimensions = lead_facts.get(subject, {}).get('dimensions', {})
@@ -835,6 +879,11 @@ def data_home(request):
         'analytics': analytics,
         'campaigns': campaigns,
         'campaign_breakdowns': breakdowns,
+        'campaign_performance': [
+            {'platform': row['platform'], 'campaign': row['campaign'],
+             'series': [{'date': day, **values}
+                        for day, values in sorted(row['series'].items())]}
+            for row in campaign_performance.values()],
         'conversion_cohorts': [
             {'date': day, **values,
              'rate': round(100 * values['customers'] / values['leads'], 2)

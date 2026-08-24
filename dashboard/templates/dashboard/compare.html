@@ -72,6 +72,16 @@
 
   <div class="card bg-base-100 shadow mb-6 h-fit">
     <div class="card-body">
+      <h2 class="card-title text-base">Performance per piattaforma e campagna</h2>
+      <p class="text-sm opacity-60">I lead Ads sono dichiarati dalle piattaforme; clienti e conversione finale usano i lead attribuiti nel CRM.</p>
+      <div class="overflow-x-auto">
+        <table class="table table-sm" id="home-performance-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6 h-fit">
+    <div class="card-body">
       <div class="flex flex-wrap items-center gap-3">
         <div>
           <h2 class="card-title text-base">Tasso di conversione lead → cliente</h2>
@@ -494,8 +504,8 @@ function renderHomeCampaigns() {
       maintainAspectRatio: false,
       scales: {
         x: { stacked: true, grid: { display: false }, ticks: {
-          autoSkip: groupBy !== "day", maxTicksLimit: groupBy === "day" ? undefined : 10,
-          minRotation: groupBy === "day" ? 45 : 0, maxRotation: 45,
+          autoSkip: true, maxTicksLimit: groupBy === "day" ? 16 : 10,
+          minRotation: 0, maxRotation: 0,
         } },
         y: { stacked: true, beginAtZero: true, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 },
              ticks: { callback: v => homeCampMetric === "spend" ? fmtEUR.format(v) : fmt(v) } },
@@ -507,6 +517,36 @@ function renderHomeCampaigns() {
       },
     },
   });
+}
+
+function renderHomePerformanceTable() {
+  const rows = (HOME.campaign_performance || []).map(campaign => {
+    const totals = inCurrentPeriod(campaign.series || []).reduce((out, point) => {
+      ["spend", "impressions", "clicks", "platform_leads", "crm_leads", "customers"]
+        .forEach(key => { out[key] += point[key] || 0; });
+      return out;
+    }, { spend: 0, impressions: 0, clicks: 0, platform_leads: 0, crm_leads: 0, customers: 0 });
+    return { ...campaign, ...totals };
+  }).filter(row => row.spend || row.impressions || row.clicks || row.platform_leads || row.crm_leads)
+    .sort((a, b) => b.spend - a.spend || b.platform_leads - a.platform_leads);
+  const pct = (part, total) => total ? fmtN.format(100 * part / total) + "%" : "—";
+
+  $("home-performance-table").innerHTML = `
+    <thead><tr><th>Piattaforma</th><th>Campagna</th>
+      <th class="text-right">Impression</th><th class="text-right">Click</th>
+      <th class="text-right">CTR</th><th class="text-right">Lead Ads</th>
+      <th class="text-right">Click → lead</th><th class="text-right">Lead CRM attribuiti</th>
+      <th class="text-right">Clienti</th><th class="text-right">Lead → cliente</th>
+    </tr></thead><tbody>${rows.map(row => `<tr>
+      <td>${row.platform}</td><td>${row.campaign}</td>
+      <td class="text-right">${fmt(row.impressions)}</td><td class="text-right">${fmt(row.clicks)}</td>
+      <td class="text-right">${pct(row.clicks, row.impressions)}</td>
+      <td class="text-right">${fmt(row.platform_leads)}</td>
+      <td class="text-right">${pct(row.platform_leads, row.clicks)}</td>
+      <td class="text-right">${fmt(row.crm_leads)}</td>
+      <td class="text-right">${fmt(row.customers)}</td>
+      <td class="text-right">${pct(row.customers, row.crm_leads)}</td>
+    </tr>`).join("") || '<tr><td colspan="10" class="opacity-60">Nessuna performance nel periodo.</td></tr>'}</tbody>`;
 }
 
 function renderHomeConversionRate() {
@@ -548,8 +588,8 @@ function renderHomeConversionRate() {
       maintainAspectRatio: false,
       scales: {
         x: { grid: { display: false }, ticks: {
-          autoSkip: groupBy !== "day", maxTicksLimit: groupBy === "day" ? undefined : 10,
-          minRotation: groupBy === "day" ? 45 : 0, maxRotation: 45,
+          autoSkip: true, maxTicksLimit: groupBy === "day" ? 16 : 10,
+          minRotation: 0, maxRotation: 0,
         } },
         y: { beginAtZero: true, suggestedMax: 100, grid: { color: JAMES_CHART_GRID_COLOR, lineWidth: .35 },
              ticks: { callback: value => value + "%" } },
@@ -599,6 +639,7 @@ function renderHome() {
   renderHomeAnalytics();
   renderHomeCpl();
   renderHomeCampaigns();
+  renderHomePerformanceTable();
   renderHomeConversionRate();
   renderHomeCalendar();
 }
