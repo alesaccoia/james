@@ -725,6 +725,78 @@ def data_home(request):
     } for name, days in per_campaign.items()]
     campaigns.sort(key=lambda c: -c['total_spend'])
 
+    def _acquisition_label(dimensions):
+        campaign = (dimensions.get('marketing.campaign_id') or
+                    dimensions.get('marketing.utm_campaign'))
+        source = (dimensions.get('marketing.attribution_source') or
+                  dimensions.get('wundt.lead_source') or '').lower()
+        source_labels = {
+            'meta': 'Meta', 'facebook-leads': 'Meta',
+            'google': 'Google', 'google_ads': 'Google',
+            'whatsapp': 'WhatsApp', 'website': 'Sito',
+            'piattaforma': 'Piattaforma', 'import_airtable': 'Airtable / storico',
+        }
+        source_label = source_labels.get(source, source.replace('_', ' ').title())
+        if campaign:
+            return f'{source_label or "Campagna"} · {campaign}'
+        if source == 'whatsapp':
+            return 'WhatsApp diretto'
+        return source_label or 'Non attribuito'
+
+    # CRM facts are deduplicated by pseudonymous subject. A duplicate
+    # lead_created row may carry richer attribution, so keep the earliest date
+    # but prefer the dimensions that identify a campaign.
+    lead_facts = {}
+    lead_events = SubjectEvent.objects.filter(
+        source__slug='wundt', event_type='lead_created').values_list(
+            'event_id', 'external_subject_id', 'occurred_at', 'dimensions')
+    for event_id, subject, occurred_at, dimensions in lead_events.iterator():
+        key = subject or f'event:{event_id}'
+        fact = lead_facts.setdefault(key, {
+            'occurred_at': occurred_at, 'dimensions': dimensions})
+        if occurred_at < fact['occurred_at']:
+            fact['occurred_at'] = occurred_at
+        has_campaign = (dimensions.get('marketing.campaign_id') or
+                        dimensions.get('marketing.utm_campaign'))
+        current = fact['dimensions']
+        current_campaign = (current.get('marketing.campaign_id') or
+                            current.get('marketing.utm_campaign'))
+        if has_campaign or not current_campaign:
+            fact['dimensions'] = dimensions
+
+    lead_breakdown = defaultdict(lambda: defaultdict(float))
+    for fact in lead_facts.values():
+        lead_breakdown[_acquisition_label(fact['dimensions'])][
+            fact['occurred_at'].date().isoformat()] += 1
+
+    first_purchase = {}
+    purchases = SubjectEvent.objects.filter(
+        source__slug='wundt', event_type='purchase').values_list(
+            'event_id', 'external_subject_id', 'occurred_at')
+    for event_id, subject, occurred_at in purchases.iterator():
+        key = subject or f'event:{event_id}'
+        first_purchase[key] = min(occurred_at, first_purchase.get(key, occurred_at))
+    conversion_breakdown = defaultdict(lambda: defaultdict(float))
+    for subject, occurred_at in first_purchase.items():
+        dimensions = lead_facts.get(subject, {}).get('dimensions', {})
+        conversion_breakdown[_acquisition_label(dimensions)][
+            occurred_at.date().isoformat()] += 1
+
+    def _breakdown(rows):
+        return [{'name': name,
+                 'series': [{'date': day, 'value': value}
+                            for day, value in sorted(days.items())]}
+                for name, days in sorted(rows.items())]
+
+    breakdowns = {
+        'spend': [{'name': campaign['name'],
+                   'series': [{'date': point['date'], 'value': point['spend']}
+                              for point in campaign['series']]}
+                  for campaign in campaigns],
+        'leads': _breakdown(lead_breakdown),
+        'conversions': _breakdown(conversion_breakdown),
+    }
+
     # CPL carries spend and leads so any bucketing stays a weighted ratio.
     cpl = [{'date': dt, 'spend': v['spend'], 'leads': v['leads'],
             'value': (v['spend'] / v['leads']) if v['leads'] else None}
@@ -755,7 +827,8 @@ def data_home(request):
 
     return JsonResponse({
         'analytics': analytics,
-        'campaigns': campaigns[:12],
+        'campaigns': campaigns,
+        'campaign_breakdowns': breakdowns,
         'cpl': cpl,
         'calendar': {'upcoming': upcoming, 'in_progress': in_progress, 'late': late,
                      'total': qs.count()},

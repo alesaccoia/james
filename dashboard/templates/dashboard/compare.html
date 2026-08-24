@@ -42,13 +42,14 @@
     <div class="card-body">
       <div class="flex flex-wrap items-center gap-3">
         <div>
-          <h2 class="card-title text-base">Andamento giornaliero per campagna</h2>
-          <p class="text-sm opacity-60">Le campagne Meta e Google con più spesa nel periodo.</p>
+          <h2 class="card-title text-base">Spesa, lead e conversioni per canale/campagna</h2>
+          <p class="text-sm opacity-60">Tutte le campagne e tutti i canali nel periodo selezionato; le conversioni includono il non attribuito.</p>
         </div>
         <div class="grow"></div>
         <div class="join" id="home-camp-metric">
           <button class="btn btn-xs join-item" data-m="spend">Spesa</button>
-          <button class="btn btn-xs join-item" data-m="leads">Conversioni</button>
+          <button class="btn btn-xs join-item" data-m="leads">Lead</button>
+          <button class="btn btn-xs join-item" data-m="conversions">Conversioni</button>
         </div>
       </div>
       <div class="h-72 relative"><canvas id="home-campaigns"></canvas></div>
@@ -444,16 +445,12 @@ function renderHomeCampaigns() {
     b.onclick = () => { homeCampMetric = b.dataset.m; renderHomeCampaigns(); };
   });
 
-  const ranked = (HOME.campaigns || [])
+  const ranked = ((HOME.campaign_breakdowns || {})[homeCampMetric] || [])
     .map(c => ({ ...c, series: inCurrentPeriod(c.series) }))
-    .filter(c => c.series.some(p => p[homeCampMetric] > 0))
-    .sort((a, b) => b.series.reduce((s, p) => s + p[homeCampMetric], 0) -
-                    a.series.reduce((s, p) => s + p[homeCampMetric], 0));
-  const camps = [
-    ...ranked.filter(c => c.name.startsWith("Meta ·")).slice(0, 4),
-    ...ranked.filter(c => c.name.startsWith("Google ·")).slice(0, 4),
-    ...ranked.filter(c => !c.name.includes(" · ")).slice(0, 2),
-  ];
+    .filter(c => c.series.some(p => p.value > 0))
+    .sort((a, b) => b.series.reduce((s, p) => s + p.value, 0) -
+                    a.series.reduce((s, p) => s + p.value, 0));
+  const camps = ranked;
   if (!camps.length) return;
 
   const dates = [...new Set(camps.flatMap(c => c.series.map(p => p.date)))].sort();
@@ -462,7 +459,7 @@ function renderHomeCampaigns() {
     data: {
       labels: dates,
       datasets: camps.map((c, i) => {
-        const by = Object.fromEntries(c.series.map(p => [p.date, p[homeCampMetric]]));
+        const by = Object.fromEntries(c.series.map(p => [p.date, p.value]));
         return { label: c.name.length > 34 ? c.name.slice(0, 34) + "…" : c.name,
                  data: dates.map(d => by[d] || 0),
                  backgroundColor: PALETTE[i % PALETTE.length], borderRadius: 2 };
