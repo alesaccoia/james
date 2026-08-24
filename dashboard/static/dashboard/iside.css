@@ -10,6 +10,8 @@
   --line: rgba(236, 234, 228, .20);
   --line-soft: rgba(236, 234, 228, .09);
   --hover: rgba(236, 234, 228, .05);
+  --sans: Inter, "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  --mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
 }
 
 :root[data-theme="light"] {
@@ -29,7 +31,9 @@ html { background: var(--bg); }
 body {
   background: var(--bg) !important;
   color: var(--ink);
-  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
   letter-spacing: -.01em;
 }
 
@@ -65,7 +69,7 @@ body {
 .james-brand-copy small {
   margin-top: .27rem;
   color: var(--dim);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: .55rem;
   letter-spacing: .09em;
   text-transform: uppercase;
@@ -77,9 +81,9 @@ a { text-underline-offset: 3px; }
 .btn, .tab, .badge, .input, .select, .textarea, .file-input {
   border-radius: 0 !important;
 }
-.btn, .tab, .menu, .badge, label, th {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  letter-spacing: .045em;
+.btn, .tab, .menu, label, .label-text {
+  font-family: var(--sans);
+  letter-spacing: .005em;
 }
 .btn {
   min-height: 2.25rem;
@@ -87,8 +91,9 @@ a { text-underline-offset: 3px; }
   color: var(--ink) !important;
   border-color: var(--line) !important;
   box-shadow: none !important;
-  text-transform: uppercase;
-  font-size: .69rem;
+  text-transform: none;
+  font-size: .78rem;
+  font-weight: 520;
 }
 .btn:hover { background: var(--hover) !important; border-color: var(--ink) !important; color: var(--ink) !important; }
 .btn-active, .tab-active, .btn-primary {
@@ -105,6 +110,17 @@ a { text-underline-offset: 3px; }
 .btn.btn-success, .badge.badge-success { background: #15803d !important; color: #fff !important; }
 .btn.btn-warning, .badge.badge-warning { background: #a16207 !important; color: #fff !important; }
 .james-theme-toggle { min-width: 4.6rem; color: var(--accent); }
+
+.navbar .btn-ghost {
+  border-color: transparent !important;
+  color: var(--dim) !important;
+}
+.navbar .btn-ghost:hover { color: var(--ink) !important; background: transparent !important; }
+.navbar .btn-ghost.btn-active {
+  color: var(--ink) !important;
+  background: transparent !important;
+  border-color: transparent transparent var(--accent) !important;
+}
 
 .card, .stats, .stat, .alert, .dropdown-content, .modal-box, .collapse {
   border-radius: 0 !important;
@@ -127,6 +143,7 @@ a { text-underline-offset: 3px; }
 .menu li > a:hover { background: var(--hover); color: var(--accent); }
 
 .input, .select, .textarea, .file-input {
+  font-family: var(--sans);
   background: transparent !important;
   border-color: var(--line) !important;
   color: var(--ink) !important;
@@ -137,18 +154,45 @@ a { text-underline-offset: 3px; }
 .tab {
   background: transparent !important;
   color: var(--ink) !important;
-  text-transform: uppercase;
-  font-size: .68rem;
+  text-transform: none;
+  font-size: .78rem;
+  font-weight: 500;
 }
 .tab:hover { background: var(--hover) !important; color: var(--ink) !important; }
 .tab-active, .tab-active:hover { background: var(--ink) !important; color: var(--bg) !important; }
-.badge { background: transparent !important; color: var(--ink) !important; border-color: var(--line) !important; }
+.badge {
+  background: transparent !important;
+  color: var(--dim) !important;
+  border-color: var(--line) !important;
+  font-family: var(--mono);
+  letter-spacing: .035em;
+}
 .text-error { color: #f87171 !important; }
 
-.table { background: transparent; }
+.bg-base-100, .bg-base-200, .bg-base-300 { background-color: transparent !important; }
+.table { background: transparent !important; color: var(--ink) !important; }
 .table :where(th, td) { border-color: var(--line-soft); }
-.table th { color: var(--dim); font-size: .66rem; text-transform: uppercase; }
+.table th {
+  background: transparent !important;
+  color: var(--dim) !important;
+  font-family: var(--mono);
+  font-size: .66rem;
+  font-weight: 500;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.table-zebra tbody tr:nth-child(even),
+.table-zebra tbody tr:nth-child(even) :where(th, td) { background: var(--hover) !important; }
+.table-zebra tbody tr:nth-child(odd),
+.table-zebra tbody tr:nth-child(odd) :where(th, td) { background: transparent !important; }
 .table tbody tr:hover { background: var(--hover) !important; }
+
+.checkbox, .radio, .toggle {
+  color: var(--accent) !important;
+  border-color: var(--line) !important;
+  box-shadow: none !important;
+}
+.checkbox:checked, .radio:checked { background-color: var(--accent) !important; border-color: var(--accent) !important; }
 
 footer { border-top: 1px solid var(--line-soft); color: var(--dim); }
 
