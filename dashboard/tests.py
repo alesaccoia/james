@@ -383,22 +383,26 @@ class SpendCoverageTests(TestCase):
     """Il cancello della copertura: due giorni di tolleranza, il giorno in corso
     mai scoperto, e nessun numero quando la spesa di un canale è ferma."""
 
-    def spend(self, channel, day, amount=10):
+    def spend(self, channel, day, amount=10, synced=None):
+        # `emitted_at` = quando la pipeline ha girato (lo scrive import_airbyte
+        # da _airbyte_extracted_at). Di default: il giorno stesso del dato.
+        emitted = parse_datetime(f'{synced or day}T06:00:00Z')
         if channel == 'meta':
             AirbyteRecord.objects.create(
-                stream='fb_ads_insights', ab_id=f'fb-{day}',
+                stream='fb_ads_insights', ab_id=f'fb-{day}', emitted_at=emitted,
                 data={'date_start': day, 'spend': amount, 'campaign_name': 'cmp'})
         else:
             AirbyteRecord.objects.create(
-                stream='gads_campaign', ab_id=f'gads-{day}',
+                stream='gads_campaign', ab_id=f'gads-{day}', emitted_at=emitted,
                 data={'segments_date': day, 'campaign_name': 'cmp-google',
                       'metrics_cost_micros': amount * 1_000_000})
 
-    def september(self, meta_through, google_through):
+    def september(self, meta_through, google_through,
+                  meta_synced=None, google_synced=None):
         for day in range(1, meta_through + 1):
-            self.spend('meta', f'2026-09-{day:02d}')
+            self.spend('meta', f'2026-09-{day:02d}', synced=meta_synced)
         for day in range(1, google_through + 1):
-            self.spend('google', f'2026-09-{day:02d}')
+            self.spend('google', f'2026-09-{day:02d}', synced=google_synced)
 
     def test_beyond_tolerance_no_number_and_the_reason_names_the_channel(self):
         self.september(meta_through=12, google_through=9)
@@ -445,6 +449,78 @@ class SpendCoverageTests(TestCase):
 
         self.assertTrue(verdict['reliable'])
         self.assertIn('spesa Google: nessun dato recente', verdict['note'])
+
+    def test_paused_campaigns_are_no_delivery_not_a_stopped_pipeline(self):
+        # Il caso vero del 12/9/2026: Meta arriva al 12, Google al 9 perché le
+        # sue campagne sono in pausa, ed ENTRAMBI i connettori hanno girato il
+        # 12. Guardato il 15, il periodo 1-12 è completo: quello zero è una
+        # misura, il CAC si stampa pieno e senza "~".
+        self.september(meta_through=12, google_through=9,
+                       meta_synced='2026-09-12', google_synced='2026-09-12')
+
+        verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                 today=date(2026, 9, 15))
+
+        google = next(row for row in verdict['channels'] if row['key'] == 'google')
+        self.assertEqual(google['state'], 'no_delivery')
+        self.assertEqual(google['missing_days'], 3)
+        self.assertEqual(google['uncovered_days'], 0)
+        self.assertEqual(verdict['uncovered_days'], 0)
+        self.assertTrue(verdict['reliable'])
+        self.assertFalse(verdict['approximate'])
+        self.assertFalse(verdict['blocked'])
+        self.assertEqual(verdict['reason'], '')
+        self.assertIn('Google: nessuna erogazione dal 10/09/2026', verdict['note'])
+
+    def test_the_same_data_with_an_old_sync_is_a_stopped_pipeline(self):
+        # Stesso dataset, ma il connettore Google non gira da cinque giorni:
+        # qui la coda non è zero, è ignota.
+        self.september(meta_through=12, google_through=9,
+                       meta_synced='2026-09-12', google_synced='2026-09-10')
+
+        verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                 today=date(2026, 9, 15))
+
+        google = next(row for row in verdict['channels'] if row['key'] == 'google')
+        self.assertEqual(google['state'], 'stale')
+        self.assertEqual(verdict['uncovered_days'], 3)
+        self.assertTrue(verdict['blocked'])
+        self.assertIn('spesa Google ferma al 09/09/2026', verdict['reason'])
+
+    def test_a_window_inside_the_pause_still_prints_the_number(self):
+        self.september(meta_through=12, google_through=9,
+                       meta_synced='2026-09-12', google_synced='2026-09-12')
+
+        verdict = spend_coverage(date(2026, 9, 10), date(2026, 9, 12),
+                                 today=date(2026, 9, 15))
+
+        google = next(row for row in verdict['channels'] if row['key'] == 'google')
+        self.assertEqual(google['days_with_data'], 0)
+        self.assertEqual(google['state'], 'no_delivery')
+        self.assertTrue(verdict['reliable'])
+        self.assertIn('Google: nessuna erogazione dal 10/09/2026', verdict['note'])
+
+    def test_no_delivery_keeps_the_cac_in_performance_metrics(self):
+        source = AnalyticsSource.objects.create(name='CRM', slug='crm')
+        SubjectEvent.objects.create(
+            source=source, event_id='lead-1', event_type='lead_created',
+            external_subject_id='opaque-1',
+            occurred_at=parse_datetime('2026-09-01T10:00:00Z'),
+            dimensions={'wundt.lead_source': 'facebook-leads'})
+        SubjectEvent.objects.create(
+            source=source, event_id='buy-1', event_type='purchase',
+            external_subject_id='opaque-1',
+            occurred_at=parse_datetime('2026-09-03T10:00:00Z'),
+            measures={'commerce.revenue_eur': '500'})
+        self.september(meta_through=12, google_through=9,
+                       meta_synced='2026-09-12', google_synced='2026-09-12')
+
+        result = performance_metrics(source='crm', start='2026-09-01',
+                                     end='2026-09-12')
+
+        self.assertEqual(result['kpis']['spend_eur'], 210)
+        self.assertEqual(result['kpis']['cac_eur'], 210)
+        self.assertTrue(result['spend_coverage']['reliable'])
 
     def test_blocked_coverage_takes_the_cac_out_of_performance_metrics(self):
         source = AnalyticsSource.objects.create(name='CRM', slug='crm')

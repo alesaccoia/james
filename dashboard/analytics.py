@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from statistics import median
 
+from django.db.models import Max
 from django.utils import timezone
 
 from .models import AirbyteRecord, SubjectEvent
@@ -96,7 +97,9 @@ def split_payers(first_lead, first_purchase, lead_source):
 # ------------------------------------------------- copertura della spesa
 # Latenza normale: Meta riattribuisce fino a ~72h e l'import di JAMES gira ogni
 # sei ore, quindi gli ultimi due giorni possono mancare senza che sia rotto
-# niente. Oltre, il dato non è in ritardo: manca.
+# niente. Oltre, il dato non è in ritardo: manca. La stessa soglia serve
+# dall'altro lato in `_channel_state`, per dire quando un sync ha girato
+# abbastanza tardi da aver dovuto portare un giorno: è la stessa latenza.
 GIORNI_TOLLERANZA_SPESA = 2
 
 # Un canale è "di norma con dato" se ha righe di spesa nel periodo o nel mese
@@ -136,17 +139,61 @@ def _spend_days(channel):
     return days
 
 
+def _last_sync_day(channel):
+    """Il giorno in cui la pipeline di quel canale ha girato l'ultima volta.
+
+    Proxy: il massimo `emitted_at` dello stream, che `import_airbyte` scrive da
+    `_airbyte_extracted_at` e riaggiorna sulle righe che cambiano. Se il
+    connettore non gira resta indietro, ed è esattamente il segnale che serve.
+    None se lo stream non ha nessun timestamp: in quel caso non si sa se la
+    pipeline ha girato, e non sapere vale come "non ha girato".
+    """
+    last = AirbyteRecord.objects.filter(stream=channel['stream']).aggregate(
+        last=Max('emitted_at'))['last']
+    return timezone.localtime(last).date() if last else None
+
+
+def _channel_state(last_day, active_since, missing, sync_day):
+    """Lo stato di un canale, deciso in quest'ordine:
+
+    - `off`: nessun dato nel periodo né nei 30 giorni prima. È spento, non
+      fermo, e un canale spento non blocca niente.
+    - `covered`: la coda non manca.
+    - `no_delivery`: la coda manca, MA la pipeline ha girato abbastanza tardi
+      da doverla aver portata (primo giorno mancante + tolleranza). Allora lo
+      zero è una MISURA, non un buco: la spesa del periodo è completa. È il
+      caso delle campagne Google in pausa dal 10/9/2026.
+    - `stale`: la coda manca e la pipeline non ha girato dopo. Qui il dato non
+      è zero, è ignoto.
+
+    La domanda che separa gli ultimi due non è "ci sono dati?" ma "la pipeline
+    ha girato?": senza questo discriminante una campagna in pausa sembra un
+    connettore rotto, e si spegne un CAC che era giusto.
+    """
+    if not last_day or last_day < active_since:
+        return 'off'
+    if not missing:
+        return 'covered'
+    if sync_day is None:
+        return 'stale'
+    dovuto_arrivare = (date.fromisoformat(missing[0]) +
+                       timedelta(days=GIORNI_TOLLERANZA_SPESA))
+    return 'no_delivery' if sync_day >= dovuto_arrivare else 'stale'
+
+
 def spend_coverage(start, end, today=None):
     """Verdetto sulla copertura della spesa nel periodo, canale per canale.
 
     La copertura di un canale è il suo ULTIMO giorno con un dato di spesa.
-    Scoperti sono i giorni del periodo che stanno dopo quell'ultimo giorno,
-    contati fino a IERI: il giorno in corso non è mai scoperto, sta ancora
-    arrivando. Un buco *dentro* la finestra coperta non conta, perché Airbyte
-    non ritira un giorno già consegnato: lì "spesa zero" è un fatto, non
-    un'assenza.
+    Mancano i giorni del periodo che stanno dopo quell'ultimo giorno, contati
+    fino a IERI: il giorno in corso non manca mai, sta ancora arrivando. Un
+    buco *dentro* la finestra coperta non conta, perché Airbyte non ritira un
+    giorno già consegnato: lì "spesa zero" è un fatto, non un'assenza.
 
-    Verdetto, con `GIORNI_TOLLERANZA_SPESA = 2`:
+    Una coda che manca però non basta a dire che il dato non c'è: se la
+    pipeline ha girato dopo, quello zero è una misura (vedi `_channel_state`).
+    Scoperti sono quindi solo i giorni dei canali in stato `stale`, e il
+    verdetto, con `GIORNI_TOLLERANZA_SPESA = 2`, è:
 
     - 0 giorni scoperti      -> il numero si stampa;
     - da 1 a 2               -> si stampa con `~` e la nota di copertura;
@@ -165,26 +212,37 @@ def spend_coverage(start, end, today=None):
     for channel in SPEND_CHANNELS:
         days = _spend_days(channel)
         last = max(days) if days else None
-        row = {'key': channel['key'], 'label': channel['label'],
-               'last_day': last, 'active': bool(last and last >= active_since),
-               'days_with_data': sum(start.isoformat() <= day <= end.isoformat()
-                                     for day in days),
-               'uncovered_days': 0}
-        if row['active']:
-            missing = _days_between(
-                max(start, date.fromisoformat(last) + timedelta(days=1)), through)
-            row['uncovered_days'] = len(missing)
+        missing = _days_between(
+            max(start, date.fromisoformat(last) + timedelta(days=1)), through
+        ) if last else []
+        sync_day = _last_sync_day(channel)
+        state = _channel_state(last, active_since, missing, sync_day)
+        if state == 'stale':
             uncovered |= set(missing)
-        channels.append(row)
+        channels.append({
+            'key': channel['key'], 'label': channel['label'],
+            'last_day': last, 'state': state, 'active': state != 'off',
+            'last_sync': sync_day.isoformat() if sync_day else None,
+            'days_with_data': sum(start.isoformat() <= day <= end.isoformat()
+                                  for day in days),
+            'missing_days': len(missing) if state != 'off' else 0,
+            'uncovered_days': len(missing) if state == 'stale' else 0,
+        })
 
     reasons, notes = [], []
     for row in channels:
-        if not row['active']:
-            notes.append(f"spesa {row['label']}: nessun dato recente")
+        label = row['label']
+        if row['state'] == 'off':
+            notes.append(f"spesa {label}: nessun dato recente")
             continue
-        notes.append(f"spesa {row['label']} aggiornata al {_it_day(row['last_day'])}")
+        if row['state'] == 'no_delivery':
+            # Tono neutro: è un'informazione, non un avviso. Il numero è giusto.
+            since = date.fromisoformat(row['last_day']) + timedelta(days=1)
+            notes.append(f"{label}: nessuna erogazione dal {_it_day(since.isoformat())}")
+            continue
+        notes.append(f"spesa {label} aggiornata al {_it_day(row['last_day'])}")
         if row['uncovered_days']:
-            reasons.append(f"spesa {row['label']} ferma al {_it_day(row['last_day'])}")
+            reasons.append(f"spesa {label} ferma al {_it_day(row['last_day'])}")
 
     total = len(uncovered)
     shortfall = reason = ''
