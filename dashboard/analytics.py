@@ -187,11 +187,14 @@ def spend_coverage(start, end, today=None):
             reasons.append(f"spesa {row['label']} ferma al {_it_day(row['last_day'])}")
 
     total = len(uncovered)
-    reason = ''
+    shortfall = reason = ''
     if total:
-        reason = (f"{', '.join(reasons)}: {total} "
-                  f"{'giorno' if total == 1 else 'giorni'} del periodo "
-                  f"{'non coperto' if total == 1 else 'non coperti'}")
+        shortfall = (f"{total} {'giorno' if total == 1 else 'giorni'} del periodo "
+                     f"{'non coperto' if total == 1 else 'non coperti'}")
+        # `reason` sta accanto al numero che non si stampa, quindi deve bastare
+        # da sola; `shortfall` va in coda alla riga delle due date, che i canali
+        # fermi li ha già scritti.
+        reason = f"{', '.join(reasons)}: {shortfall}"
     return {
         'start': start.isoformat(), 'end': end.isoformat(),
         'evaluated_through': through.isoformat() if through >= start else None,
@@ -203,6 +206,7 @@ def spend_coverage(start, end, today=None):
         'approximate': 0 < total <= GIORNI_TOLLERANZA_SPESA,
         'blocked': total > GIORNI_TOLLERANZA_SPESA,
         'reason': reason,
+        'shortfall': shortfall,
         'note': ' · '.join(notes),
     }
 

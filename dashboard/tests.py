@@ -472,6 +472,59 @@ class SpendCoverageTests(TestCase):
         self.assertTrue(result['spend_coverage']['blocked'])
 
 
+class DashboardSurfacesTests(TestCase):
+    """Le pagine che stampano un CAC ricevono il verdetto dal server."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user('analista', password='test'))
+        source = AnalyticsSource.objects.create(name='WUNDT', slug='wundt')
+        SubjectEvent.objects.create(
+            source=source, event_id='lead-1', event_type='lead_created',
+            external_subject_id='opaque-1',
+            occurred_at=parse_datetime('2026-09-01T10:00:00Z'),
+            dimensions={'wundt.lead_source': 'facebook-leads',
+                        'marketing.attribution_source': 'meta',
+                        'marketing.campaign_id': 'cmp-1'})
+        SubjectEvent.objects.create(
+            source=source, event_id='lead-2', event_type='lead_created',
+            external_subject_id='opaque-2',
+            occurred_at=parse_datetime('2026-09-02T10:00:00Z'),
+            dimensions={'wundt.lead_source': 'import_airtable'})
+        SubjectEvent.objects.create(
+            source=source, event_id='buy-1', event_type='purchase',
+            external_subject_id='opaque-1',
+            occurred_at=parse_datetime('2026-09-03T10:00:00Z'),
+            measures={'commerce.revenue_eur': '300'})
+        AirbyteRecord.objects.create(
+            stream='fb_ads_insights', ab_id='fb-1',
+            data={'date_start': '2026-09-01', 'spend': 100,
+                  'campaign_id': 'cmp-1', 'campaign_name': 'cmp-1'})
+
+    def test_compare_page_and_json_carry_the_coverage_verdict(self):
+        page = self.client.get('/dashboard/')
+        self.assertContains(page, 'coverage-note')
+        self.assertContains(page, 'spend-coverage.json')
+
+        payload = self.client.get('/data/compare.json').json()
+        self.assertIn('spend_coverage', payload)
+        self.assertIn('crm_definitions', payload)
+        self.assertIn('crm_excluded_payers', payload['metrics'])
+
+        verdict = self.client.get(
+            '/data/spend-coverage.json?start=2026-09-01&end=2026-09-12').json()
+        self.assertEqual(verdict['start'], '2026-09-01')
+        self.assertEqual(verdict['tolerance_days'], 2)
+
+    def test_home_json_counts_leads_and_customers_like_the_kpis(self):
+        home = self.client.get('/data/home.json').json()
+
+        # Il lead migrato resta fuori, l'acquisizione c'è.
+        cohorts = {row['date']: row for row in home['conversion_cohorts']}
+        self.assertEqual(cohorts['2026-09-01']['leads'], 1)
+        self.assertEqual(cohorts['2026-09-01']['customers'], 1)
+        self.assertNotIn('2026-09-02', cohorts)
+
+
 @override_settings(PED_SERVICE_TOKEN='ped-test-token')
 class EditorialCalendarApiTests(TestCase):
     def setUp(self):

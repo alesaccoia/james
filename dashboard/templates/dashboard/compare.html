@@ -33,7 +33,8 @@
     </div>
   </div>
 
-  <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-6" id="overview-kpis"></div>
+  <div class="stats stats-vertical sm:stats-horizontal shadow w-full mb-2" id="overview-kpis"></div>
+  <p class="text-xs opacity-60 mb-6" id="coverage-note"></p>
 
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
     <div class="card bg-base-100 shadow h-fit">
@@ -47,6 +48,7 @@
       <div class="card-body">
         <h2 class="card-title text-base">Costo per conversione</h2>
         <p class="text-sm opacity-60">Costo giornaliero per conversione dichiarata dalle piattaforme.</p>
+        <p class="text-xs opacity-60" id="cpl-coverage-note"></p>
         <div class="h-64 relative"><canvas id="home-cpl"></canvas></div>
       </div>
     </div>
@@ -160,6 +162,7 @@
 "use strict";
 
 const DATA_URL = CMP_CFG.data_url;
+const COVERAGE_URL = CMP_CFG.coverage_url;
 const METRIC_DEFS = CMP_CFG.metrics; // {key: {label, source, unit}}
 const PALETTE = ["#5b9dff", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#f87171", "#2dd4bf", "#fb923c", "#c084fc", "#94a3b8"];
 
@@ -174,6 +177,11 @@ const colorOf = (key) => PALETTE[METRIC_KEYS.indexOf(key) % PALETTE.length];
 
 let SERIES = {}; // key -> [{date, value}]
 let EVENTS = [];
+// Verdetto sulla copertura della spesa, calcolato in Python (dashboard.analytics
+// .spend_coverage): qui si rende, non si ricalcola. Vale per il periodo scritto
+// dentro, e quando il periodo cambia si richiede al server.
+let COVERAGE = null;
+let CRM_DEFINITIONS = {};
 let selected = new Set(["paid_spend", "crm_leads", "crm_new_customers", "crm_whatsapp_leads"]);
 let period = 30;
 let customStart = "";
@@ -341,6 +349,56 @@ function totalOf(key) {
   return filteredSeries(key).reduce((s, p) => s + p.value, 0);
 }
 
+// Il periodo a video, come due date ISO: è quello su cui la pagina somma i
+// totali, e quindi quello su cui chiedere il verdetto della copertura.
+function currentRange() {
+  if (period === "custom") return [customStart, customEnd];
+  if (period === "all") {
+    const dates = Object.values(SERIES).flatMap(s => s.map(p => p.date)).sort();
+    return [dates[0] || todayStr(), todayStr()];
+  }
+  return [daysAgo(period), todayStr()];
+}
+
+let coverageRequest = 0;
+
+async function ensureCoverage() {
+  const [start, end] = currentRange();
+  if (COVERAGE && COVERAGE.start === start && COVERAGE.end === end) return;
+  const token = ++coverageRequest;
+  try {
+    const r = await fetch(`${COVERAGE_URL}?start=${start}&end=${end}`, { cache: "no-store" });
+    const verdict = r.ok ? await r.json() : null;
+    if (token !== coverageRequest) return; // un altro periodo ha già chiesto
+    COVERAGE = verdict;
+  } catch {
+    if (token !== coverageRequest) return;
+    COVERAGE = null;
+  }
+  renderOverviewKPIs();
+  renderCoverageNote();
+}
+
+// Ogni metrica che divide per la spesa passa da qui: oltre la tolleranza non
+// stampa un numero ma il motivo, e dentro la tolleranza lo marca con "~".
+// La regola non è qui, è in dashboard/analytics.py: qui si legge il verdetto.
+function gatedCost(value) {
+  if (value == null) return { val: "—", desc: "" };
+  if (!COVERAGE) return { val: "…", desc: "verifica della copertura in corso" };
+  if (COVERAGE.blocked) return { val: "—", desc: COVERAGE.reason };
+  return { val: (COVERAGE.approximate ? "~" : "") + fmtEUR.format(value),
+           desc: COVERAGE.approximate ? COVERAGE.reason : "" };
+}
+
+function renderCoverageNote() {
+  const parts = [];
+  if (COVERAGE && COVERAGE.note) parts.push(COVERAGE.note);
+  if (COVERAGE && COVERAGE.shortfall) parts.push(COVERAGE.shortfall);
+  if (CRM_DEFINITIONS.lead_type_note) parts.push(CRM_DEFINITIONS.lead_type_note);
+  $("coverage-note").textContent = parts.join(" · ");
+  $("cpl-coverage-note").textContent = (COVERAGE && COVERAGE.reason) || "";
+}
+
 function renderOverviewKPIs() {
   const metaSpend = totalOf("fb_spend");
   const googleSpend = totalOf("gads_spend");
@@ -352,8 +410,9 @@ function renderOverviewKPIs() {
   const sessions = totalOf("ga_sessions");
   const crmLeads = totalOf("crm_leads");
   const whatsappLeads = totalOf("crm_whatsapp_leads");
-  const newCustomers = totalOf("crm_new_customers");
-  const cac = newCustomers ? spend / newCustomers : null;
+  const acquisitions = totalOf("crm_new_customers");
+  const excludedPayers = totalOf("crm_excluded_payers");
+  const cac = acquisitions ? spend / acquisitions : null;
 
   const defs = [
     { name: "Spesa paid totale", val: fmtEUR.format(spend) },
@@ -361,16 +420,20 @@ function renderOverviewKPIs() {
     { name: "Google Ads", val: fmtEUR.format(googleSpend) },
     { name: "Lead CRM", val: fmt(crmLeads) },
     { name: "WhatsApp diretti", val: fmt(whatsappLeads) },
-    { name: "Nuovi clienti", val: fmt(newCustomers) },
-    { name: "CAC blended", val: cac == null ? "—" : fmtEUR.format(cac) },
+    { name: "Acquisizioni", val: fmt(acquisitions),
+      desc: excludedPayers
+        ? `${fmt(excludedPayers)} paganti esclusi: erano già clienti`
+        : "lead preesistenti che hanno pagato" },
+    { name: "CAC blended", ...gatedCost(cac) },
     { name: "Conv. piattaforme", val: fmt(platformConversions) },
-    { name: "Costo / conv.", val: cpl == null ? "—" : fmtEUR.format(cpl) },
+    { name: "Costo / conv.", ...gatedCost(cpl) },
     { name: "Sessioni sito", val: fmt(sessions) },
   ];
   $("overview-kpis").innerHTML = defs.map(d => `
     <div class="stat">
       <div class="stat-title">${d.name}</div>
       <div class="stat-value text-2xl">${d.val}</div>
+      ${d.desc ? `<div class="stat-desc whitespace-normal">${d.desc}</div>` : ""}
     </div>`).join("");
 }
 
@@ -381,6 +444,8 @@ function renderAll() {
   $("pill-range").textContent = `periodo: ${period === "custom" ? customStart + " → " + customEnd :
     (period === "all" ? "tutto lo storico" : "ultimi " + period + " giorni")}`;
   renderOverviewKPIs();
+  renderCoverageNote();
+  ensureCoverage();
   renderChart();
   renderTotals();
   renderHome();
@@ -756,6 +821,8 @@ async function load() {
     if (!r.ok) throw new Error(r.status);
     const json = await r.json();
     SERIES = Object.fromEntries(Object.entries(json.metrics).map(([k, v]) => [k, v.series]));
+    COVERAGE = json.spend_coverage || null;
+    CRM_DEFINITIONS = json.crm_definitions || {};
     EVENTS = await MarketingEvents.load();
     const hasAny = Object.values(SERIES).some(s => s.length);
     if (!hasAny) { $("empty-state").classList.remove("hidden"); $("content").classList.add("hidden"); return; }
