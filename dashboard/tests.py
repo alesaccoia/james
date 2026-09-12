@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -449,6 +450,72 @@ class SpendCoverageTests(TestCase):
 
         self.assertTrue(verdict['reliable'])
         self.assertIn('spesa Google: nessun dato recente', verdict['note'])
+
+    def landing(self, meta, google):
+        """La landing Airbyte, finta: {'meta': (ultimo giorno, giorno di sync)}.
+
+        In produzione la legge `_landing_probe` via l'alias `airbyte`; qui
+        l'alias non esiste, quindi la si sostituisce.
+        """
+        def probe(channel):
+            last_day, sync_day = {'meta': meta, 'google': google}[channel['key']]
+            return {'available': True, 'last_day': last_day,
+                    'sync_day': date.fromisoformat(sync_day) if sync_day else None}
+        return patch('dashboard.analytics._landing_probe', side_effect=probe)
+
+    def test_a_still_channel_is_not_stale_if_the_landing_heartbeat_is_fresh(self):
+        # Campagne in pausa: nel mirror `emitted_at` resta al 9/9 perché nessuna
+        # riga cambia, ma la landing dice che la pipeline ha girato il 15.
+        self.september(meta_through=12, google_through=9,
+                       meta_synced='2026-09-09', google_synced='2026-09-09')
+
+        with self.landing(meta=('2026-09-12', '2026-09-15'),
+                          google=('2026-09-09', '2026-09-15')):
+            verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                     today=date(2026, 9, 16))
+
+        google = next(row for row in verdict['channels'] if row['key'] == 'google')
+        self.assertEqual(google['last_sync'], '2026-09-15')
+        self.assertFalse(google['mirror_behind'])
+        self.assertEqual(google['state'], 'no_delivery')
+        self.assertTrue(verdict['reliable'])
+
+        # Senza il battito della landing lo stesso dataset sembrerebbe fermo:
+        # è il limite del ripiego, ed è la ragione per cui si legge la landing.
+        fallback = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                  today=date(2026, 9, 16))
+        self.assertTrue(fallback['blocked'])
+
+    def test_a_mirror_left_behind_says_so_instead_of_showing_a_number(self):
+        # Il mirror si è fermato al 9/9 e la landing è arrivata al 12: è il
+        # guasto che a WUNDT è passato inosservato per cinque mesi e mezzo.
+        self.september(meta_through=9, google_through=9,
+                       meta_synced='2026-09-09', google_synced='2026-09-09')
+
+        with self.landing(meta=('2026-09-12', '2026-09-12'),
+                          google=('2026-09-12', '2026-09-12')):
+            verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                     today=date(2026, 9, 13))
+
+        meta = next(row for row in verdict['channels'] if row['key'] == 'meta')
+        self.assertTrue(meta['mirror_behind'])
+        self.assertEqual(meta['state'], 'stale')
+        self.assertTrue(verdict['blocked'])
+        self.assertIn('i dati Meta nel mirror si fermano al 09/09/2026 mentre '
+                      'la pipeline è arrivata al 12/09/2026', verdict['reason'])
+
+    def test_a_mirror_in_line_with_the_landing_changes_nothing(self):
+        self.september(meta_through=12, google_through=9,
+                       meta_synced='2026-09-12', google_synced='2026-09-12')
+
+        with self.landing(meta=('2026-09-12', '2026-09-12'),
+                          google=('2026-09-09', '2026-09-12')):
+            verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                     today=date(2026, 9, 15))
+
+        self.assertTrue(verdict['reliable'])
+        self.assertFalse(any(row['mirror_behind'] for row in verdict['channels']))
+        self.assertIn('Google: nessuna erogazione dal 10/09/2026', verdict['note'])
 
     def test_paused_campaigns_are_no_delivery_not_a_stopped_pipeline(self):
         # Il caso vero del 12/9/2026: Meta arriva al 12, Google al 9 perché le

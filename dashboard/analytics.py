@@ -1,10 +1,12 @@
 """Aggregations over generic subject events; never returns row-level identities."""
 
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
 from statistics import median
 
+from django.conf import settings
+from django.db import connections
 from django.db.models import Max
 from django.utils import timezone
 
@@ -139,21 +141,81 @@ def _spend_days(channel):
     return days
 
 
-def _last_sync_day(channel):
-    """Il giorno in cui la pipeline di quel canale ha girato l'ultima volta.
+def _sync_day(moment):
+    """Il giorno locale di un timestamp di sync. Airbyte scrive in UTC, e le
+    colonne naive si leggono come UTC, esattamente come in `import_airbyte`."""
+    if not moment:
+        return None
+    if timezone.is_naive(moment):
+        moment = moment.replace(tzinfo=dt_timezone.utc)
+    return timezone.localtime(moment).date()
 
-    Proxy: il massimo `emitted_at` dello stream, che `import_airbyte` scrive da
-    `_airbyte_extracted_at` e riaggiorna sulle righe che cambiano. Se il
-    connettore non gira resta indietro, ed è esattamente il segnale che serve.
-    None se lo stream non ha nessun timestamp: in quel caso non si sa se la
-    pipeline ha girato, e non sapere vale come "non ha girato".
+
+def _landing_probe(channel):
+    """Ultimo giorno con dato e ultimo sync letti dalla LANDING di Airbyte.
+
+    Airbyte riscrive tutte le righe a ogni sync anche quando i numeri non
+    cambiano (verificato il 12/9/2026: le righe dell'8/9 portano un
+    `_airbyte_extracted_at` del 12/9 06:02), quindi là quel massimo è un
+    battito autentico: dice che la pipeline HA GIRATO, non che qualcosa si è
+    mosso. Serve per due cose — il battito e il confronto col mirror.
+
+    Il nome della tabella e del campo vengono da `SPEND_CHANNELS`, costanti di
+    questo modulo, mai da input. `available` è False in sviluppo e nei test,
+    dove l'alias `airbyte` non è configurato.
     """
+    empty = {'available': False, 'last_day': None, 'sync_day': None}
+    if 'airbyte' not in settings.DATABASES:
+        return empty
+    try:
+        with connections['airbyte'].cursor() as cursor:
+            cursor.execute(f'SELECT MAX("{channel["date_field"]}"), '
+                           f'MAX("_airbyte_extracted_at") FROM "{channel["stream"]}"')
+            last_day, last_sync = cursor.fetchone()
+    except Exception:
+        return empty
+    return {'available': True,
+            'last_day': str(last_day)[:10] if last_day else None,
+            'sync_day': _sync_day(last_sync)}
+
+
+def _last_sync_day(channel, landing):
+    """Quando la pipeline di quel canale ha girato l'ultima volta.
+
+    Prima la landing, che è il battito vero. Ripiego: il massimo `emitted_at`
+    del mirror.
+
+    LIMITE DEL RIPIEGO, dichiarato: `import_airbyte` aggiorna `emitted_at` solo
+    sulle righe il cui payload cambia, quindi un canale immobile — campagne
+    tutte in pausa, niente che si muove — col tempo sembra una pipeline ferma.
+    Vale solo dove la landing non è raggiungibile (sviluppo, test).
+    """
+    if landing['sync_day']:
+        return landing['sync_day']
     last = AirbyteRecord.objects.filter(stream=channel['stream']).aggregate(
         last=Max('emitted_at'))['last']
-    return timezone.localtime(last).date() if last else None
+    return _sync_day(last)
 
 
-def _channel_state(last_day, active_since, missing, sync_day):
+def _mirror_behind(mirror_last, landing_last):
+    """True se la landing ha giorni di spesa che il mirror non ha.
+
+    È il guasto da cui nasce tutta questa storia: il mirror di WUNDT è morto il
+    24/8 e la landing ha continuato a riempirsi, così per cinque mesi e mezzo
+    la pagina ha mostrato numeri costruiti su una copia ferma senza che nulla
+    lo dicesse. Se `james-import.timer` si ferma domani, qui si vede.
+    Tolleranza: la stessa della spesa — il mirror gira 38 minuti dopo il sync,
+    quindi lo sfasamento normale è zero giorni e non fa scattare niente.
+    """
+    try:
+        gap = (date.fromisoformat(landing_last) -
+               date.fromisoformat(mirror_last)).days
+    except (TypeError, ValueError):
+        return False
+    return gap > GIORNI_TOLLERANZA_SPESA
+
+
+def _channel_state(last_day, active_since, missing, sync_day, mirror_behind):
     """Lo stato di un canale, deciso in quest'ordine:
 
     - `off`: nessun dato nel periodo né nei 30 giorni prima. È spento, non
@@ -163,18 +225,20 @@ def _channel_state(last_day, active_since, missing, sync_day):
       da doverla aver portata (primo giorno mancante + tolleranza). Allora lo
       zero è una MISURA, non un buco: la spesa del periodo è completa. È il
       caso delle campagne Google in pausa dal 10/9/2026.
-    - `stale`: la coda manca e la pipeline non ha girato dopo. Qui il dato non
-      è zero, è ignoto.
+    - `stale`: la coda manca e la pipeline non ha girato dopo, oppure il mirror
+      è indietro rispetto alla landing. Qui il dato non è zero, è ignoto.
 
     La domanda che separa gli ultimi due non è "ci sono dati?" ma "la pipeline
     ha girato?": senza questo discriminante una campagna in pausa sembra un
-    connettore rotto, e si spegne un CAC che era giusto.
+    connettore rotto, e si spegne un CAC che era giusto. Il mirror indietro
+    viene prima del battito: se la landing quei giorni li ha, non è una pausa,
+    è la nostra copia che non li ha presi.
     """
     if not last_day or last_day < active_since:
         return 'off'
     if not missing:
         return 'covered'
-    if sync_day is None:
+    if mirror_behind or sync_day is None:
         return 'stale'
     dovuto_arrivare = (date.fromisoformat(missing[0]) +
                        timedelta(days=GIORNI_TOLLERANZA_SPESA))
@@ -215,14 +279,17 @@ def spend_coverage(start, end, today=None):
         missing = _days_between(
             max(start, date.fromisoformat(last) + timedelta(days=1)), through
         ) if last else []
-        sync_day = _last_sync_day(channel)
-        state = _channel_state(last, active_since, missing, sync_day)
+        landing = _landing_probe(channel)
+        sync_day = _last_sync_day(channel, landing)
+        behind = _mirror_behind(last, landing['last_day'])
+        state = _channel_state(last, active_since, missing, sync_day, behind)
         if state == 'stale':
             uncovered |= set(missing)
         channels.append({
             'key': channel['key'], 'label': channel['label'],
             'last_day': last, 'state': state, 'active': state != 'off',
             'last_sync': sync_day.isoformat() if sync_day else None,
+            'landing_last_day': landing['last_day'], 'mirror_behind': behind,
             'days_with_data': sum(start.isoformat() <= day <= end.isoformat()
                                   for day in days),
             'missing_days': len(missing) if state != 'off' else 0,
@@ -241,7 +308,14 @@ def spend_coverage(start, end, today=None):
             notes.append(f"{label}: nessuna erogazione dal {_it_day(since.isoformat())}")
             continue
         notes.append(f"spesa {label} aggiornata al {_it_day(row['last_day'])}")
-        if row['uncovered_days']:
+        if not row['uncovered_days']:
+            continue
+        if row['mirror_behind']:
+            # Guasto nostro, non della pipeline: va detto per quello che è.
+            reasons.append(
+                f"i dati {label} nel mirror si fermano al {_it_day(row['last_day'])} "
+                f"mentre la pipeline è arrivata al {_it_day(row['landing_last_day'])}")
+        else:
             reasons.append(f"spesa {label} ferma al {_it_day(row['last_day'])}")
 
     total = len(uncovered)
