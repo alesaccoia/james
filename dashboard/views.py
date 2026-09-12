@@ -10,7 +10,8 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
 
-from .analytics import commercial_metrics, performance_metrics
+from .analytics import (commercial_metrics, is_funnel_lead, lead_source_of,
+                        performance_metrics, spend_coverage, split_payers)
 from .models import (AirbyteRecord, BudgetLine, BudgetPlan, ChannelCadence,
                      ComparePreset, ContentPiece, FunnelKPI, FunnelStage,
                      FunnelStageSource, MarketingEvent, SubjectEvent, Tag, TagDimension,
@@ -612,12 +613,17 @@ METRIC_INFO = {
     'ga_leads': ('Lead generati (GA4)', 'Google Analytics', 'count'),
     'crm_leads': ('Lead CRM', 'WUNDT CRM', 'count'),
     'crm_whatsapp_leads': ('Lead WhatsApp diretti', 'WUNDT CRM', 'count'),
-    'crm_new_customers': ('Conversioni (nuovi clienti)', 'WUNDT CRM', 'count'),
+    # Acquisizione, non "pagante": un lead che esisteva prima e ha pagato dopo.
+    # La chiave resta `crm_new_customers` perché è dentro ai preset già salvati.
+    'crm_new_customers': ('Acquisizioni (lead preesistenti)', 'WUNDT CRM', 'count'),
+    'crm_excluded_payers': ('Paganti esclusi (già clienti)', 'WUNDT CRM', 'count'),
     'crm_revenue': ('Incassi', 'WUNDT CRM', 'eur'),
 }
 
 
 def _build_metrics():
+    """(serie confrontabili, payload CRM). Il payload torna indietro perché la
+    pagina ha bisogno anche delle sue note: acquisizioni, esclusi, copertura."""
     crm = performance_metrics()
     crm_daily = crm.get('daily', [])
     fb, google = _paid_source_series()
@@ -640,11 +646,14 @@ def _build_metrics():
         'crm_whatsapp_leads': _crm_lead_source_series('whatsapp'),
         'crm_new_customers': [{'date': d['date'], 'value': d['new_customers']}
                               for d in crm_daily],
+        'crm_excluded_payers': [{'date': d['date'],
+                                 'value': d.get('excluded_payers', 0)}
+                                for d in crm_daily],
         'crm_revenue': [{'date': d['date'], 'value': d['revenue_eur']} for d in crm_daily],
     }
     series['paid_spend'] = _sum_series(series['fb_spend'], series['gads_spend'])
     return {key: {'label': info[0], 'source': info[1], 'unit': info[2],
-                  'series': series[key]} for key, info in METRIC_INFO.items()}
+                  'series': series[key]} for key, info in METRIC_INFO.items()}, crm
 
 
 @login_required
@@ -662,6 +671,7 @@ def compare(request):
     cfg = {
         'data_url': reverse('dashboard:data_compare'),
         'home_url': reverse('dashboard:data_home'),
+        'coverage_url': reverse('dashboard:data_spend_coverage'),
         'calendario_url': reverse('dashboard:calendario'),
         'metrics': {key: {'label': info[0], 'source': info[1], 'unit': info[2]}
                     for key, info in METRIC_INFO.items()},
@@ -774,16 +784,22 @@ def data_home(request):
     # CRM facts are deduplicated by pseudonymous subject. A duplicate
     # lead_created row may carry richer attribution, so keep the earliest date
     # but prefer the dimensions that identify a campaign.
-    lead_facts = {}
+    all_lead_facts = {}
     lead_events = SubjectEvent.objects.filter(
         source__slug='wundt', event_type='lead_created').values_list(
             'event_id', 'external_subject_id', 'occurred_at', 'dimensions')
     for event_id, subject, occurred_at, dimensions in lead_events.iterator():
         key = subject or f'event:{event_id}'
-        fact = lead_facts.setdefault(key, {
-            'occurred_at': occurred_at, 'dimensions': dimensions})
+        fact = all_lead_facts.setdefault(key, {
+            'occurred_at': occurred_at, 'dimensions': dimensions,
+            'funnel': is_funnel_lead(dimensions),
+            'source': lead_source_of(dimensions)})
         if occurred_at < fact['occurred_at']:
             fact['occurred_at'] = occurred_at
+        # Un duplicato che dice "tutor potenziale" o "migrazione" basta a
+        # escludere il lead, anche se le dimensions scelte sotto sono altre.
+        fact['funnel'] = fact['funnel'] and is_funnel_lead(dimensions)
+        fact['source'] = fact['source'] or lead_source_of(dimensions)
         has_campaign = (dimensions.get('marketing.campaign_id') or
                         dimensions.get('marketing.utm_campaign'))
         current = fact['dimensions']
@@ -792,11 +808,6 @@ def data_home(request):
         if has_campaign or not current_campaign:
             fact['dimensions'] = dimensions
 
-    lead_breakdown = defaultdict(lambda: defaultdict(float))
-    for fact in lead_facts.values():
-        lead_breakdown[_acquisition_label(fact['dimensions'])][
-            fact['occurred_at'].date().isoformat()] += 1
-
     first_purchase = {}
     purchases = SubjectEvent.objects.filter(
         source__slug='wundt', event_type='purchase').values_list(
@@ -804,6 +815,22 @@ def data_home(request):
     for event_id, subject, occurred_at in purchases.iterator():
         key = subject or f'event:{event_id}'
         first_purchase[key] = min(occurred_at, first_purchase.get(key, occurred_at))
+
+    # Stesse definizioni della striscia dei KPI (dashboard.analytics): i lead
+    # entrati sono quelli del funnel, i clienti sono le acquisizioni. Le mappe
+    # per decidere l'acquisizione si costruiscono sui lead INTERI, migrazioni
+    # comprese: serve sapere se il lead esisteva prima del pagamento.
+    acquisitions, _excluded_payers = split_payers(
+        {key: fact['occurred_at'] for key, fact in all_lead_facts.items()},
+        first_purchase,
+        {key: fact['source'] for key, fact in all_lead_facts.items()})
+    lead_facts = {key: fact for key, fact in all_lead_facts.items()
+                  if fact['funnel']}
+
+    lead_breakdown = defaultdict(lambda: defaultdict(float))
+    for fact in lead_facts.values():
+        lead_breakdown[_acquisition_label(fact['dimensions'])][
+            fact['occurred_at'].date().isoformat()] += 1
 
     source_platform = {'meta': 'Meta', 'facebook-leads': 'Meta',
                        'google': 'Google Ads', 'google_ads': 'Google Ads'}
@@ -819,10 +846,10 @@ def data_home(request):
         row = campaign_performance[key] if key else _performance_row(platform, None, campaign)
         values = row['series'][fact['occurred_at'].date().isoformat()]
         values['crm_leads'] += 1
-        values['customers'] += int(subject in first_purchase)
+        values['customers'] += int(subject in acquisitions)
     conversion_breakdown = defaultdict(lambda: defaultdict(float))
-    for subject, occurred_at in first_purchase.items():
-        dimensions = lead_facts.get(subject, {}).get('dimensions', {})
+    for subject, occurred_at in acquisitions.items():
+        dimensions = all_lead_facts.get(subject, {}).get('dimensions', {})
         conversion_breakdown[_acquisition_label(dimensions)][
             occurred_at.date().isoformat()] += 1
 
@@ -830,7 +857,7 @@ def data_home(request):
     for subject, fact in lead_facts.items():
         row = conversion_cohorts[fact['occurred_at'].date().isoformat()]
         row['leads'] += 1
-        row['customers'] += int(subject in first_purchase)
+        row['customers'] += int(subject in acquisitions)
 
     def _breakdown(rows):
         return [{'name': name,
@@ -895,10 +922,37 @@ def data_home(request):
     })
 
 
+def _requested_period(request):
+    """Il periodo su cui si chiede il verdetto di copertura: quello passato
+    dalla pagina, o gli ultimi 30 giorni, che è il suo periodo di default."""
+    today = timezone.localdate()
+    def _day(value):
+        try:
+            return date.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+    return (_day(request.GET.get('start')) or today - timedelta(days=30),
+            _day(request.GET.get('end')) or today)
+
+
 @login_required
 def data_compare(request):
-    metrics = _build_metrics()
-    return JsonResponse({'metrics': metrics})
+    metrics, crm = _build_metrics()
+    return JsonResponse({
+        'metrics': metrics,
+        'spend_coverage': spend_coverage(*_requested_period(request)),
+        'crm_definitions': crm.get('definitions', {}),
+    })
+
+
+@login_required
+def data_spend_coverage(request):
+    """Il verdetto di copertura della spesa per il periodo scelto a video.
+
+    La pagina lo richiede quando si cambia periodo invece di ricalcolarselo: la
+    regola (tolleranza, giorni scoperti, canale fermo) sta solo qui.
+    """
+    return JsonResponse(spend_coverage(*_requested_period(request)))
 
 
 @login_required

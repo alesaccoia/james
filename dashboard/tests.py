@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils.dateparse import parse_datetime
 
-from .analytics import commercial_metrics, performance_metrics
+from .analytics import commercial_metrics, performance_metrics, spend_coverage
 from .models import (AirbyteRecord, AnalyticsSource, EditorialChange,
                      FieldDefinition, SubjectEvent)
 from .views import _resolve_tags, _spend_by_tag_dimension
@@ -247,7 +247,7 @@ class CommercialMetricsTests(TestCase):
                    '2026-01-04T10:00:00Z', revenue='50')
         AirbyteRecord.objects.create(
             stream='fb_ads_insights', ab_id='spend-a',
-            data={'date_start': '2026-01-01', 'spend': 40,
+            data={'date_start': '2026-01-02', 'spend': 40,
                   'campaign_name': 'cmp-a'})
         AirbyteRecord.objects.create(
             stream='gads_campaign', ab_id='google-spend-a',
@@ -255,17 +255,221 @@ class CommercialMetricsTests(TestCase):
                   'metrics_cost_micros': 10_000_000,
                   'campaign_name': 'cmp-google'})
 
+        # Il periodo si chiude il 4: la spesa arriva al 2, quindi due giorni
+        # scoperti, dentro la tolleranza — il CAC si stampa ancora (con la "~"
+        # che ci mette la UI). Con una finestra fino al 31 gennaio il cancello
+        # della copertura lo toglierebbe, ed è giusto così.
         result = performance_metrics(source='crm', start='2026-01-01',
-                                     end='2026-01-31')
+                                     end='2026-01-04')
 
         self.assertEqual(result['kpis']['leads'], 1)
         self.assertEqual(result['kpis']['new_customers'], 1)
         self.assertEqual(result['kpis']['purchases'], 2)
         self.assertEqual(result['kpis']['spend_eur'], 50)
         self.assertEqual(result['kpis']['cac_eur'], 50)
+        self.assertTrue(result['spend_coverage']['approximate'])
         self.assertEqual(result['kpis']['average_realized_ltv_eur'], 150)
         self.assertEqual(result['funnel'][-1]['count'], 1)
         self.assertEqual(sum(row['new_customers'] for row in result['daily']), 1)
+
+
+class WundtDefinitionsTests(TestCase):
+    """Acquisizioni e lead entrati con le definizioni indurite in WUNDT.
+
+    Un pagante conta come cliente acquisito solo se il lead esisteva già il
+    giorno prima e non viene da una fonte fuori funnel; fra i lead entrati non
+    ci sono le migrazioni né i potenziali tutor.
+    """
+
+    def setUp(self):
+        self.source = AnalyticsSource.objects.create(name='CRM', slug='crm')
+        # Spesa su tutti i giorni del periodo: qui si guardano le definizioni,
+        # il cancello della copertura ha i suoi test.
+        for day in ('2026-03-01', '2026-03-02', '2026-03-03'):
+            AirbyteRecord.objects.create(
+                stream='fb_ads_insights', ab_id=f'fb-{day}',
+                data={'date_start': day, 'spend': 10, 'campaign_name': 'cmp'})
+
+    def lead(self, subject, when, source=None, lead_type=None):
+        dimensions = {}
+        if source:
+            dimensions['wundt.lead_source'] = source
+        if lead_type:
+            dimensions['wundt.lead_type'] = lead_type
+        return SubjectEvent.objects.create(
+            source=self.source, event_id=f'lead:{subject}',
+            event_type='lead_created', external_subject_id=subject,
+            occurred_at=parse_datetime(when), dimensions=dimensions)
+
+    def purchase(self, subject, when, revenue='100'):
+        return SubjectEvent.objects.create(
+            source=self.source, event_id=f'buy:{subject}', event_type='purchase',
+            external_subject_id=subject, occurred_at=parse_datetime(when),
+            measures={'commerce.revenue_eur': revenue})
+
+    def metrics(self):
+        return performance_metrics(source='crm', start='2026-03-01',
+                                   end='2026-03-03')
+
+    def test_lead_that_pays_the_day_after_is_an_acquisition(self):
+        self.lead('opaque-1', '2026-03-01T10:00:00Z')
+        self.purchase('opaque-1', '2026-03-02T09:00:00Z')
+
+        kpis = self.metrics()['kpis']
+
+        self.assertEqual(kpis['leads'], 1)
+        self.assertEqual(kpis['new_customers'], 1)
+        self.assertEqual(kpis['excluded_payers'], 0)
+
+    def test_payer_of_the_same_day_is_not_an_acquisition(self):
+        self.lead('opaque-1', '2026-03-01T10:00:00Z')
+        self.purchase('opaque-1', '2026-03-01T18:00:00Z')
+
+        result = self.metrics()
+
+        self.assertEqual(result['kpis']['new_customers'], 0)
+        self.assertEqual(result['kpis']['excluded_payers'], 1)
+        self.assertIsNone(result['kpis']['cac_eur'])
+        self.assertEqual(sum(row['excluded_payers'] for row in result['daily']), 1)
+
+    def test_platform_source_payer_is_not_an_acquisition(self):
+        self.lead('opaque-1', '2026-03-01T10:00:00Z', source='piattaforma')
+        self.purchase('opaque-1', '2026-03-03T09:00:00Z')
+
+        kpis = self.metrics()['kpis']
+
+        self.assertEqual(kpis['new_customers'], 0)
+        self.assertEqual(kpis['excluded_payers'], 1)
+        # 'piattaforma' è anche una fonte di migrazione: niente lead entrato.
+        self.assertEqual(kpis['leads'], 0)
+
+    def test_days_are_compared_in_rome_not_in_utc(self):
+        # 23:30 UTC del 1° marzo a Roma sono le 00:30 del 2: acquisizione.
+        self.lead('opaque-1', '2026-03-01T10:00:00Z')
+        self.purchase('opaque-1', '2026-03-01T23:30:00Z')
+
+        self.assertEqual(self.metrics()['kpis']['new_customers'], 1)
+
+    def test_migration_sources_stay_out_of_the_leads(self):
+        self.lead('opaque-1', '2026-03-01T10:00:00Z', source='import_airtable')
+        self.lead('opaque-2', '2026-03-01T11:00:00Z', source='facebook-leads')
+
+        self.assertEqual(self.metrics()['kpis']['leads'], 1)
+
+    def test_potential_tutors_stay_out_when_the_dimension_is_there(self):
+        self.lead('opaque-1', '2026-03-01T10:00:00Z', source='facebook-leads',
+                  lead_type='potential_tutor')
+        self.lead('opaque-2', '2026-03-01T11:00:00Z', source='facebook-leads',
+                  lead_type='client')
+
+        result = self.metrics()
+
+        self.assertEqual(result['kpis']['leads'], 1)
+        self.assertTrue(result['definitions']['lead_type_available'])
+        self.assertEqual(result['definitions']['lead_type_note'], '')
+
+    def test_without_the_dimension_potential_tutors_are_counted_and_declared(self):
+        self.lead('opaque-1', '2026-03-01T10:00:00Z', source='facebook-leads')
+        self.lead('opaque-2', '2026-03-01T11:00:00Z', source='facebook-leads')
+
+        result = self.metrics()
+
+        self.assertEqual(result['kpis']['leads'], 2)
+        self.assertFalse(result['definitions']['lead_type_available'])
+        self.assertIn('wundt.lead_type', result['definitions']['lead_type_note'])
+
+
+class SpendCoverageTests(TestCase):
+    """Il cancello della copertura: due giorni di tolleranza, il giorno in corso
+    mai scoperto, e nessun numero quando la spesa di un canale è ferma."""
+
+    def spend(self, channel, day, amount=10):
+        if channel == 'meta':
+            AirbyteRecord.objects.create(
+                stream='fb_ads_insights', ab_id=f'fb-{day}',
+                data={'date_start': day, 'spend': amount, 'campaign_name': 'cmp'})
+        else:
+            AirbyteRecord.objects.create(
+                stream='gads_campaign', ab_id=f'gads-{day}',
+                data={'segments_date': day, 'campaign_name': 'cmp-google',
+                      'metrics_cost_micros': amount * 1_000_000})
+
+    def september(self, meta_through, google_through):
+        for day in range(1, meta_through + 1):
+            self.spend('meta', f'2026-09-{day:02d}')
+        for day in range(1, google_through + 1):
+            self.spend('google', f'2026-09-{day:02d}')
+
+    def test_beyond_tolerance_no_number_and_the_reason_names_the_channel(self):
+        self.september(meta_through=12, google_through=9)
+
+        verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                 today=date(2026, 9, 13))
+
+        self.assertEqual(verdict['uncovered_days'], 3)
+        self.assertTrue(verdict['blocked'])
+        self.assertFalse(verdict['approximate'])
+        self.assertIn('Google', verdict['reason'])
+        self.assertIn('09/09/2026', verdict['reason'])
+        self.assertIn('3 giorni del periodo non coperti', verdict['reason'])
+
+    def test_within_tolerance_the_number_is_only_approximate(self):
+        self.september(meta_through=12, google_through=9)
+
+        # Oggi è il 12: il giorno in corso non conta, restano scoperti 10 e 11.
+        verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                 today=date(2026, 9, 12))
+
+        self.assertEqual(verdict['uncovered_days'], 2)
+        self.assertTrue(verdict['approximate'])
+        self.assertFalse(verdict['blocked'])
+        self.assertIn('spesa Google ferma al 09/09/2026', verdict['reason'])
+
+    def test_covered_period_shows_both_dates_and_no_reason(self):
+        self.september(meta_through=12, google_through=12)
+
+        verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                 today=date(2026, 9, 13))
+
+        self.assertTrue(verdict['reliable'])
+        self.assertEqual(verdict['uncovered_days'], 0)
+        self.assertEqual(verdict['reason'], '')
+        self.assertIn('spesa Meta aggiornata al 12/09/2026', verdict['note'])
+        self.assertIn('spesa Google aggiornata al 12/09/2026', verdict['note'])
+
+    def test_a_channel_without_recent_data_is_off_not_stale(self):
+        self.september(meta_through=12, google_through=0)
+
+        verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 12),
+                                 today=date(2026, 9, 13))
+
+        self.assertTrue(verdict['reliable'])
+        self.assertIn('spesa Google: nessun dato recente', verdict['note'])
+
+    def test_blocked_coverage_takes_the_cac_out_of_performance_metrics(self):
+        source = AnalyticsSource.objects.create(name='CRM', slug='crm')
+        SubjectEvent.objects.create(
+            source=source, event_id='lead-1', event_type='lead_created',
+            external_subject_id='opaque-1',
+            occurred_at=parse_datetime('2026-03-01T10:00:00Z'),
+            dimensions={'wundt.lead_source': 'facebook-leads',
+                        'marketing.campaign_id': 'cmp'})
+        SubjectEvent.objects.create(
+            source=source, event_id='buy-1', event_type='purchase',
+            external_subject_id='opaque-1',
+            occurred_at=parse_datetime('2026-03-05T10:00:00Z'),
+            measures={'commerce.revenue_eur': '200'})
+        self.spend('meta', '2026-03-01', amount=40)
+
+        result = performance_metrics(source='crm', start='2026-03-01',
+                                     end='2026-03-10')
+
+        self.assertEqual(result['kpis']['new_customers'], 1)
+        self.assertEqual(result['kpis']['spend_eur'], 40)
+        self.assertIsNone(result['kpis']['cac_eur'])
+        self.assertIsNone(result['kpis']['median_cac_payback_days'])
+        self.assertIsNone(result['campaigns'][0]['cac_eur'])
+        self.assertTrue(result['spend_coverage']['blocked'])
 
 
 @override_settings(PED_SERVICE_TOKEN='ped-test-token')

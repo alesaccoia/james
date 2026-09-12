@@ -1,9 +1,11 @@
 """Aggregations over generic subject events; never returns row-level identities."""
 
 from collections import defaultdict
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from statistics import median
+
+from django.utils import timezone
 
 from .models import AirbyteRecord, SubjectEvent
 
@@ -17,6 +19,201 @@ def _number(value):
 
 def _money(value):
     return round(float(value), 2)
+
+
+# ------------------------------------------- definizioni allineate a WUNDT
+# Le tre costanti qui sotto sono la copia di quelle indurite in WUNDT l'11/9/2026
+# (`wundt/analytics/metrics.py`): JAMES e la pagina `/performance/` di WUNDT
+# devono dare lo stesso numero per lo stesso periodo, quindi qui non si allarga
+# niente. Se una regola cambia di là, cambia anche qui.
+
+# Fonti i cui lead NON nascono dal funnel: li crea `sync_payments
+# --create-leads` a partire da una famiglia che era già cliente, retrodatandoli
+# al primo incasso. Un lead così esiste perché esiste il pagamento, non
+# viceversa: contarlo fra i clienti nuovi abbassa il CAC di 3-6 volte (58
+# famiglie su 92 paganti, misurato il 10/9/2026).
+NON_FUNNEL_SOURCES = ('piattaforma',)
+
+# Fonti che descrivono una migrazione e non un ingresso: restano fuori dai lead
+# entrati, che misurano il funnel di oggi. A luglio 2026 erano 213 su 504.
+IMPORT_SOURCES = ('piattaforma', 'import_airtable')
+
+# I potenziali tutor non sono clienti da acquisire.
+EXCLUDED_LEAD_TYPES = ('potential_tutor',)
+
+
+def lead_source_of(dimensions):
+    return (dimensions.get('wundt.lead_source') or '').strip().lower()
+
+
+def is_funnel_lead(dimensions):
+    """True se il lead va contato fra quelli ENTRATI nel periodo.
+
+    Fuori i potenziali tutor (`wundt.lead_type`) e le fonti di migrazione
+    (`wundt.lead_source`). WUNDT sta aggiungendo `wundt.lead_type` alle
+    dimensions: finché non c'è, il lead passa — e la dashboard lo dichiara
+    (`definitions.lead_type_note`) invece di fingere un filtro che non ha.
+    """
+    if dimensions.get('wundt.lead_type') in EXCLUDED_LEAD_TYPES:
+        return False
+    return lead_source_of(dimensions) not in IMPORT_SOURCES
+
+
+def _localday(moment):
+    """Il giorno in ora locale, come lo conta WUNDT (`timezone.localtime`)."""
+    return timezone.localtime(moment).date()
+
+
+def split_payers(first_lead, first_purchase, lead_source):
+    """(acquisizioni, esclusi), entrambi subject -> datetime del 1° pagamento.
+
+    Un pagante è un'ACQUISIZIONE solo quando il lead esisteva già prima di
+    pagare: è la differenza fra "abbiamo convertito qualcuno" e "una famiglia
+    che avevamo da prima è comparsa nel registro incassi". Due condizioni:
+
+    - la fonte del lead non è in NON_FUNNEL_SOURCES;
+    - il giorno del primo pagamento è STRETTAMENTE successivo al giorno di
+      creazione del lead. Dei pagamenti si conosce solo il giorno, quindi lo
+      stesso giorno resta fuori: su questi dati i casi "stesso giorno" sono
+      import.
+
+    Un pagante di cui JAMES non ha nessun `lead_created` non è un'acquisizione:
+    non si sa quando è nato il lead, e inventarlo è peggio che escluderlo.
+    Gli esclusi non spariscono: tornano indietro e la UI li scrive.
+    """
+    acquisitions, excluded = {}, {}
+    for subject, paid_at in first_purchase.items():
+        created = first_lead.get(subject)
+        if created is None or lead_source.get(subject, '') in NON_FUNNEL_SOURCES:
+            excluded[subject] = paid_at
+        elif _localday(paid_at) <= _localday(created):
+            excluded[subject] = paid_at
+        else:
+            acquisitions[subject] = paid_at
+    return acquisitions, excluded
+
+
+# ------------------------------------------------- copertura della spesa
+# Latenza normale: Meta riattribuisce fino a ~72h e l'import di JAMES gira ogni
+# sei ore, quindi gli ultimi due giorni possono mancare senza che sia rotto
+# niente. Oltre, il dato non è in ritardo: manca.
+GIORNI_TOLLERANZA_SPESA = 2
+
+# Un canale è "di norma con dato" se ha righe di spesa nel periodo o nel mese
+# prima: dopo tanto silenzio è spento, non fermo, e segnalarlo per sempre
+# renderebbe il cartello rumore.
+GIORNI_CANALE_ATTIVO = 30
+
+# I canali di spesa, con lo stream Airbyte e il campo da cui si legge il giorno.
+# Aggiungere un canale qui lo mette dentro al cancello.
+SPEND_CHANNELS = (
+    {'key': 'meta', 'label': 'Meta', 'stream': 'fb_ads_insights',
+     'date_field': 'date_start'},
+    {'key': 'google', 'label': 'Google', 'stream': 'gads_campaign',
+     'date_field': 'segments_date'},
+)
+
+
+def _as_date(value):
+    if not value:
+        return None
+    return date.fromisoformat(value) if isinstance(value, str) else value
+
+
+def _it_day(day_iso):
+    return '/'.join(reversed(day_iso.split('-')))
+
+
+def _spend_days(channel):
+    """I giorni ISO per cui esiste una riga di spesa di quel canale."""
+    days = set()
+    rows = AirbyteRecord.objects.filter(
+        stream=channel['stream']).values_list('data', flat=True)
+    for data in rows.iterator():
+        day = str(data.get(channel['date_field']) or '')[:10]
+        if len(day) == 10:
+            days.add(day)
+    return days
+
+
+def spend_coverage(start, end, today=None):
+    """Verdetto sulla copertura della spesa nel periodo, canale per canale.
+
+    La copertura di un canale è il suo ULTIMO giorno con un dato di spesa.
+    Scoperti sono i giorni del periodo che stanno dopo quell'ultimo giorno,
+    contati fino a IERI: il giorno in corso non è mai scoperto, sta ancora
+    arrivando. Un buco *dentro* la finestra coperta non conta, perché Airbyte
+    non ritira un giorno già consegnato: lì "spesa zero" è un fatto, non
+    un'assenza.
+
+    Verdetto, con `GIORNI_TOLLERANZA_SPESA = 2`:
+
+    - 0 giorni scoperti      -> il numero si stampa;
+    - da 1 a 2               -> si stampa con `~` e la nota di copertura;
+    - oltre 2                -> non si stampa nessun numero, si stampa il
+                                motivo (quale canale è fermo e a quando).
+
+    È la stessa regola della pagina `/performance/` di WUNDT: le due dashboard
+    devono rifiutare di dividere per una spesa incompleta negli stessi casi.
+    """
+    start, end = _as_date(start), _as_date(end)
+    today = today or timezone.localdate()
+    through = min(end, today - timedelta(days=1))
+    active_since = (start - timedelta(days=GIORNI_CANALE_ATTIVO)).isoformat()
+
+    channels, uncovered = [], set()
+    for channel in SPEND_CHANNELS:
+        days = _spend_days(channel)
+        last = max(days) if days else None
+        row = {'key': channel['key'], 'label': channel['label'],
+               'last_day': last, 'active': bool(last and last >= active_since),
+               'days_with_data': sum(start.isoformat() <= day <= end.isoformat()
+                                     for day in days),
+               'uncovered_days': 0}
+        if row['active']:
+            missing = _days_between(
+                max(start, date.fromisoformat(last) + timedelta(days=1)), through)
+            row['uncovered_days'] = len(missing)
+            uncovered |= set(missing)
+        channels.append(row)
+
+    reasons, notes = [], []
+    for row in channels:
+        if not row['active']:
+            notes.append(f"spesa {row['label']}: nessun dato recente")
+            continue
+        notes.append(f"spesa {row['label']} aggiornata al {_it_day(row['last_day'])}")
+        if row['uncovered_days']:
+            reasons.append(f"spesa {row['label']} ferma al {_it_day(row['last_day'])}")
+
+    total = len(uncovered)
+    reason = ''
+    if total:
+        reason = (f"{', '.join(reasons)}: {total} "
+                  f"{'giorno' if total == 1 else 'giorni'} del periodo "
+                  f"{'non coperto' if total == 1 else 'non coperti'}")
+    return {
+        'start': start.isoformat(), 'end': end.isoformat(),
+        'evaluated_through': through.isoformat() if through >= start else None,
+        'tolerance_days': GIORNI_TOLLERANZA_SPESA,
+        'channels': channels,
+        'uncovered_days': total,
+        'uncovered_dates': sorted(uncovered)[:31],
+        'reliable': total == 0,
+        'approximate': 0 < total <= GIORNI_TOLLERANZA_SPESA,
+        'blocked': total > GIORNI_TOLLERANZA_SPESA,
+        'reason': reason,
+        'note': ' · '.join(notes),
+    }
+
+
+def _days_between(first, last):
+    """I giorni ISO da `first` a `last` compresi; vuoto se `last` viene prima."""
+    days, current = [], first
+    while current <= last:
+        days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
 
 
 def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
@@ -190,10 +387,18 @@ NON_CONTACT_ACTIONS = {
 
 
 def performance_metrics(source='wundt', start=None, end=None):
-    """WUNDT-parity metrics computed only from JAMES facts and Airbyte spend."""
+    """WUNDT-parity metrics computed only from JAMES facts and Airbyte spend.
+
+    "Lead entrati" e "acquisizioni" seguono le definizioni di WUNDT (vedi
+    `is_funnel_lead` e `split_payers`): non sono "chi ha un primo pagamento nel
+    periodo" e "chi ha un primo lead nel periodo". La chiave `new_customers`
+    resta quella di prima perché è la chiave che i preset salvati della pagina
+    Confronto hanno dentro (`crm_new_customers`), ma il numero è il numero
+    delle ACQUISIZIONI, e le etichette lo dicono.
+    """
     all_events = SubjectEvent.objects.filter(source__slug=source).order_by(
         'occurred_at', 'pk')
-    first_lead, campaign_by_subject = {}, {}
+    first_lead, campaign_by_subject, lead_dims = {}, {}, {}
     first_purchase, purchases_by_subject = {}, defaultdict(list)
     status_history, contact_history = defaultdict(list), defaultdict(list)
     for event in all_events.iterator():
@@ -207,6 +412,13 @@ def performance_metrics(source='wundt', start=None, end=None):
                         event.dimensions.get('marketing.utm_campaign'))
             if campaign:
                 campaign_by_subject[subject] = campaign
+            # Fonte e tipo del lead: fra due `lead_created` dello stesso
+            # soggetto vince il primo che li porta (sono duplicati dello stesso
+            # lead, non due lead diversi).
+            dims = lead_dims.setdefault(subject, {})
+            for field in ('wundt.lead_source', 'wundt.lead_type'):
+                if field not in dims and event.dimensions.get(field):
+                    dims[field] = event.dimensions[field]
         elif event.event_type == 'purchase':
             value = _number(event.measures.get('commerce.revenue_eur'))
             purchases_by_subject[subject].append((event.occurred_at, value))
@@ -221,51 +433,55 @@ def performance_metrics(source='wundt', start=None, end=None):
             if action and action not in NON_CONTACT_ACTIONS:
                 contact_history[subject].append(event.occurred_at)
 
-    start_date = start or min((when.date() for when in first_lead.values()),
-                              default=None)
-    end_date = end or max(
-        [when.date() for when in first_lead.values()] +
-        [when.date() for when in first_purchase.values()], default=None)
-    if isinstance(start_date, str):
-        from datetime import date
-        start_date = date.fromisoformat(start_date)
-    if isinstance(end_date, str):
-        from datetime import date
-        end_date = date.fromisoformat(end_date)
+    start_date = _as_date(start) or min(
+        (_localday(when) for when in first_lead.values()), default=None)
+    end_date = _as_date(end) or max(
+        [_localday(when) for when in first_lead.values()] +
+        [_localday(when) for when in first_purchase.values()], default=None)
     if not start_date or not end_date:
         return {'empty': True, 'daily': [], 'funnel': [], 'campaigns': []}
 
     latest_status = {}
     for subject, history in status_history.items():
-        eligible = [row for row in history if row[0].date() <= end_date]
+        eligible = [row for row in history if _localday(row[0]) <= end_date]
         if eligible:
             latest_status[subject] = eligible[-1][1]
     first_contact = {}
     for subject, history in contact_history.items():
-        eligible = [when for when in history if when.date() <= end_date]
+        eligible = [when for when in history if _localday(when) <= end_date]
         if eligible:
             first_contact[subject] = min(eligible)
 
+    lead_source = {subject: lead_source_of(dims)
+                   for subject, dims in lead_dims.items()}
+    acquisitions, excluded = split_payers(first_lead, first_purchase, lead_source)
+
     cohort = {subject for subject, when in first_lead.items()
-              if start_date <= when.date() <= end_date}
+              if start_date <= _localday(when) <= end_date
+              and is_funnel_lead(lead_dims.get(subject, {}))}
     period_purchases = [(subject, when, value)
                         for subject, rows in purchases_by_subject.items()
                         for when, value in rows
-                        if start_date <= when.date() <= end_date]
-    new_customers = {subject for subject, when in first_purchase.items()
-                     if start_date <= when.date() <= end_date}
+                        if start_date <= _localday(when) <= end_date]
+    new_customers = {subject for subject, when in acquisitions.items()
+                     if start_date <= _localday(when) <= end_date}
+    excluded_payers = {subject for subject, when in excluded.items()
+                       if start_date <= _localday(when) <= end_date}
     converted_cohort = {subject for subject in cohort
-                        if subject in first_purchase and
-                        first_purchase[subject].date() <= end_date}
+                        if subject in acquisitions and
+                        _localday(acquisitions[subject]) <= end_date}
 
-    daily = defaultdict(lambda: {'leads': 0, 'new_customers': 0, 'purchases': 0,
+    daily = defaultdict(lambda: {'leads': 0, 'new_customers': 0,
+                                 'excluded_payers': 0, 'purchases': 0,
                                  'revenue_eur': Decimal(0), 'spend_eur': Decimal(0)})
     for subject in cohort:
-        daily[first_lead[subject].date().isoformat()]['leads'] += 1
+        daily[_localday(first_lead[subject]).isoformat()]['leads'] += 1
     for subject in new_customers:
-        daily[first_purchase[subject].date().isoformat()]['new_customers'] += 1
+        daily[_localday(acquisitions[subject]).isoformat()]['new_customers'] += 1
+    for subject in excluded_payers:
+        daily[_localday(excluded[subject]).isoformat()]['excluded_payers'] += 1
     for _, when, value in period_purchases:
-        row = daily[when.date().isoformat()]
+        row = daily[_localday(when).isoformat()]
         row['purchases'] += 1
         row['revenue_eur'] += value
 
@@ -311,11 +527,11 @@ def performance_metrics(source='wundt', start=None, end=None):
 
     revenue = sum((value for _, _, value in period_purchases), Decimal(0))
     paying = {subject for subject, _, _ in period_purchases}
-    repeat = sum(sum(when.date() <= end_date for when, _ in
+    repeat = sum(sum(_localday(when) <= end_date for when, _ in
                      purchases_by_subject[subject]) > 1
                  for subject in new_customers)
     eligible_90 = [subject for subject, when in first_purchase.items()
-                   if when.date() + timedelta(days=90) <= end_date]
+                   if _localday(when) + timedelta(days=90) <= end_date]
     revenue_90 = sum((value for subject in eligible_90
                       for when, value in purchases_by_subject[subject]
                       if when <= first_purchase[subject] + timedelta(days=90)), Decimal(0))
@@ -324,42 +540,54 @@ def performance_metrics(source='wundt', start=None, end=None):
                                          'purchases': 0, 'revenue': Decimal(0)})
     for subject in cohort:
         campaign_rows[campaign_by_subject.get(subject, 'unattributed')]['leads'] += 1
+    # Al numeratore del CAC di campagna vanno le acquisizioni, non tutti quelli
+    # che hanno pagato: altrimenti il CAC di campagna direbbe una cosa e quello
+    # blended un'altra.
+    for subject in new_customers:
+        campaign_rows[campaign_by_subject.get(subject, 'unattributed')][
+            'customers'].add(subject)
     for subject, when, value in period_purchases:
-        campaign = campaign_by_subject.get(subject, 'unattributed')
-        row = campaign_rows[campaign]
-        row['customers'].add(subject)
+        row = campaign_rows[campaign_by_subject.get(subject, 'unattributed')]
         row['purchases'] += 1
         row['revenue'] += value
 
+    coverage = spend_coverage(start_date, end_date)
+    lead_type_available = any('wundt.lead_type' in dims
+                              for dims in lead_dims.values())
     cac_value = spend / len(new_customers) if new_customers else None
     payback_days = []
     if cac_value is not None:
         for subject in new_customers:
             running = Decimal(0)
             for when, value in purchases_by_subject[subject]:
-                if when.date() > end_date:
+                if _localday(when) > end_date:
                     break
                 running += value
                 if running >= cac_value:
-                    payback_days.append((when - first_purchase[subject]).days)
+                    payback_days.append((when - acquisitions[subject]).days)
                     break
 
     return {
         'empty': False, 'start': start_date.isoformat(), 'end': end_date.isoformat(),
         'kpis': {
             'leads': len(cohort), 'new_customers': len(new_customers),
+            'excluded_payers': len(excluded_payers),
             'customers_in_cohort': len(converted_cohort),
             'conversion_rate': round(100 * len(converted_cohort) / len(cohort), 2)
             if cohort else None,
             'purchases': len(period_purchases), 'revenue_eur': _money(revenue),
             'spend_eur': _money(spend),
-            'cac_eur': _money(cac_value) if cac_value is not None else None,
+            # Il cancello della copertura: con la spesa incompleta oltre
+            # tolleranza queste due non tornano un numero, tornano None, e la UI
+            # scrive il motivo. Un CAC sottostimato è peggio di un CAC assente.
+            'cac_eur': _money(cac_value)
+            if cac_value is not None and not coverage['blocked'] else None,
             'average_realized_ltv_eur': _money(revenue / len(paying)) if paying else None,
             'mature_ltv_90_eur': _money(ltv_90) if ltv_90 is not None else None,
             'repeat_rate': round(100 * repeat / len(new_customers), 2)
             if new_customers else None,
             'median_cac_payback_days': round(median(payback_days), 1)
-            if payback_days else None,
+            if payback_days and not coverage['blocked'] else None,
             'median_first_contact_hours': round(median(delays), 1) if delays else None,
             'contacted_within_24h_rate': round(
                 100 * sum(delay <= 24 for delay in delays) / len(cohort), 2)
@@ -375,13 +603,27 @@ def performance_metrics(source='wundt', start=None, end=None):
             'revenue_eur': _money(row['revenue']),
             'spend_eur': _money(spend_by_campaign.get(campaign, 0)),
             'cac_eur': _money(spend_by_campaign[campaign] / len(row['customers']))
-            if row['customers'] and spend_by_campaign.get(campaign) else None,
+            if row['customers'] and spend_by_campaign.get(campaign)
+            and not coverage['blocked'] else None,
         } for campaign, row in campaign_rows.items()),
             key=lambda row: (-row['revenue_eur'], -row['leads'])),
+        'spend_coverage': coverage,
+        'definitions': {
+            'lead_type_available': lead_type_available,
+            'lead_type_note': '' if lead_type_available else (
+                'tutor potenziali inclusi: gli eventi non portano ancora la '
+                'dimensione wundt.lead_type'),
+            'non_funnel_sources': list(NON_FUNNEL_SOURCES),
+            'import_sources': list(IMPORT_SOURCES),
+        },
         'coverage': {
             'lead_subjects': len(first_lead),
             'status_subjects': len(latest_status),
             'contact_subjects': len(first_contact),
             'spend_days': sum(bool(row['spend_eur']) for row in daily.values()),
+            # Paganti di cui JAMES non ha il `lead_created`: sono la differenza
+            # possibile fra questo numero e quello di WUNDT, quindi si vede.
+            'payers_without_lead': sum(subject not in first_lead
+                                       for subject in first_purchase),
         },
     }

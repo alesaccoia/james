@@ -16,6 +16,8 @@ urlpatterns = [
     path('guida/', views.help_page, name='help'),
     path('data/compare.json', views.data_compare, name='data_compare'),
     path('data/compare-presets.json', views.compare_presets, name='compare_presets'),
+    path('data/spend-coverage.json', views.data_spend_coverage,
+         name='data_spend_coverage'),
     path('data/home.json', views.data_home, name='data_home'),
     path('data/commercial-metrics.json', views.data_commercial_metrics,
          name='data_commercial_metrics'),
