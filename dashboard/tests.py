@@ -384,26 +384,32 @@ class SpendCoverageTests(TestCase):
     """Il cancello della copertura: due giorni di tolleranza, il giorno in corso
     mai scoperto, e nessun numero quando la spesa di un canale è ferma."""
 
-    def spend(self, channel, day, amount=10, synced=None):
+    def spend(self, channel, day, amount=10, synced=None, status=None):
         # `emitted_at` = quando la pipeline ha girato (lo scrive import_airbyte
         # da _airbyte_extracted_at). Di default: il giorno stesso del dato.
+        # `status` = campaign_status di Google all'ultimo sync (attributo
+        # attuale, non storico): senza, la riga non dice niente sulla pausa.
         emitted = parse_datetime(f'{synced or day}T06:00:00Z')
         if channel == 'meta':
             AirbyteRecord.objects.create(
                 stream='fb_ads_insights', ab_id=f'fb-{day}', emitted_at=emitted,
                 data={'date_start': day, 'spend': amount, 'campaign_name': 'cmp'})
         else:
+            data = {'segments_date': day, 'campaign_name': 'cmp-google',
+                    'metrics_cost_micros': amount * 1_000_000}
+            if status:
+                data['campaign_status'] = status
             AirbyteRecord.objects.create(
                 stream='gads_campaign', ab_id=f'gads-{day}', emitted_at=emitted,
-                data={'segments_date': day, 'campaign_name': 'cmp-google',
-                      'metrics_cost_micros': amount * 1_000_000})
+                data=data)
 
     def september(self, meta_through, google_through,
-                  meta_synced=None, google_synced=None):
+                  meta_synced=None, google_synced=None, google_status=None):
         for day in range(1, meta_through + 1):
             self.spend('meta', f'2026-09-{day:02d}', synced=meta_synced)
         for day in range(1, google_through + 1):
-            self.spend('google', f'2026-09-{day:02d}', synced=google_synced)
+            self.spend('google', f'2026-09-{day:02d}', synced=google_synced,
+                       status=google_status)
 
     def test_beyond_tolerance_no_number_and_the_reason_names_the_channel(self):
         self.september(meta_through=12, google_through=9)
@@ -551,6 +557,47 @@ class SpendCoverageTests(TestCase):
         google = next(row for row in verdict['channels'] if row['key'] == 'google')
         self.assertEqual(google['state'], 'stale')
         self.assertEqual(verdict['uncovered_days'], 3)
+        self.assertTrue(verdict['blocked'])
+        self.assertIn('spesa Google ferma al 09/09/2026', verdict['reason'])
+
+    def test_paused_campaigns_keep_the_number_when_the_heartbeat_is_frozen(self):
+        # Il caso del 22/9/2026 nella forma peggiore: Google in pausa dal
+        # 10/9, le sue righe riestratte l'ultima volta il 10/9 (poi fuori
+        # dalla finestra di lookback: il battito si congela PRIMA di aver
+        # dovuto portare il primo giorno mancante), Meta al 21 sincronizzata
+        # il 22. Col solo battito sarebbe "pipeline ferma"; ma all'ultimo dato
+        # le campagne risultano PAUSED: la coda vale zero, numero pieno.
+        self.september(meta_through=21, google_through=9,
+                       meta_synced='2026-09-22', google_synced='2026-09-10',
+                       google_status='PAUSED')
+
+        verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 22),
+                                 today=date(2026, 9, 22))
+
+        google = next(row for row in verdict['channels'] if row['key'] == 'google')
+        self.assertEqual(google['state'], 'no_delivery')
+        self.assertTrue(google['paused'])
+        self.assertEqual(google['missing_days'], 12)
+        self.assertEqual(google['uncovered_days'], 0)
+        self.assertTrue(verdict['reliable'])
+        self.assertFalse(verdict['blocked'])
+        self.assertEqual(verdict['reason'], '')
+        self.assertIn('Google: campagne in pausa, nessuna erogazione dal 10/09/2026',
+                      verdict['note'])
+
+    def test_enabled_campaigns_with_a_frozen_heartbeat_are_a_stopped_pipeline(self):
+        # Stessi dati, ma le campagne risultano ENABLED: allora i giorni vuoti
+        # non sono una pausa, e con un battito fermo al 10/9 il dato è ignoto.
+        self.september(meta_through=21, google_through=9,
+                       meta_synced='2026-09-22', google_synced='2026-09-10',
+                       google_status='ENABLED')
+
+        verdict = spend_coverage(date(2026, 9, 1), date(2026, 9, 22),
+                                 today=date(2026, 9, 22))
+
+        google = next(row for row in verdict['channels'] if row['key'] == 'google')
+        self.assertEqual(google['state'], 'stale')
+        self.assertFalse(google['paused'])
         self.assertTrue(verdict['blocked'])
         self.assertIn('spesa Google ferma al 09/09/2026', verdict['reason'])
 

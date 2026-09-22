@@ -114,8 +114,11 @@ GIORNI_CANALE_ATTIVO = 30
 SPEND_CHANNELS = (
     {'key': 'meta', 'label': 'Meta', 'stream': 'fb_ads_insights',
      'date_field': 'date_start'},
+    # `status_field`: la colonna con lo stato ATTUALE della campagna al momento
+    # del sync (Airbyte non storicizza gli attributi). Serve a riconoscere un
+    # canale con le campagne tutte in pausa, vedi `_campaigns_paused`.
     {'key': 'google', 'label': 'Google', 'stream': 'gads_campaign',
-     'date_field': 'segments_date'},
+     'date_field': 'segments_date', 'status_field': 'campaign_status'},
 )
 
 
@@ -139,6 +142,34 @@ def _spend_days(channel):
         if len(day) == 10:
             days.add(day)
     return days
+
+
+def _campaigns_paused(channel, last_day):
+    """True se all'ultimo giorno con dato nessuna campagna del canale era
+    ENABLED: all'ultimo sync erano tutte in pausa o rimosse.
+
+    È la seconda strada per dire che una coda di giorni vuoti vale zero, e
+    serve perché la prima — il battito della pipeline — si spegne da sola
+    proprio sul canale fermo: Airbyte riestrae solo le righe dentro la sua
+    finestra di lookback, e un canale che non eroga ne esce nel giro di una o
+    due settimane. Da lì `_airbyte_extracted_at` si congela anche se il
+    connettore gira ogni sei ore. Visto il 22/9/2026: Google in pausa dal
+    10/9, "nessuna erogazione" il 12/9, "pipeline ferma" dal 19/9, e il CAC
+    del mese spento per un falso allarme.
+
+    Senza colonna di stato (Meta insights) o senza un valore, la risposta è
+    no: non si inventa una pausa. Il limite, dichiarato: lo stato è quello
+    dell'ultimo sync; se qualcuno riaccende le campagne E il connettore è
+    rotto nello stesso momento, qui si continua a leggere "in pausa".
+    """
+    field = channel.get('status_field')
+    if not field or not last_day:
+        return False
+    rows = AirbyteRecord.objects.filter(
+        stream=channel['stream'],
+        **{f"data__{channel['date_field']}": last_day}).values_list('data', flat=True)
+    statuses = {data.get(field) for data in rows} - {None, ''}
+    return bool(statuses) and 'ENABLED' not in statuses
 
 
 def _sync_day(moment):
@@ -215,30 +246,39 @@ def _mirror_behind(mirror_last, landing_last):
     return gap > GIORNI_TOLLERANZA_SPESA
 
 
-def _channel_state(last_day, active_since, missing, sync_day, mirror_behind):
+def _channel_state(last_day, active_since, missing, sync_day, mirror_behind,
+                   paused=False):
     """Lo stato di un canale, deciso in quest'ordine:
 
     - `off`: nessun dato nel periodo né nei 30 giorni prima. È spento, non
       fermo, e un canale spento non blocca niente.
     - `covered`: la coda non manca.
-    - `no_delivery`: la coda manca, MA la pipeline ha girato abbastanza tardi
-      da doverla aver portata (primo giorno mancante + tolleranza). Allora lo
-      zero è una MISURA, non un buco: la spesa del periodo è completa. È il
-      caso delle campagne Google in pausa dal 10/9/2026.
-    - `stale`: la coda manca e la pipeline non ha girato dopo, oppure il mirror
-      è indietro rispetto alla landing. Qui il dato non è zero, è ignoto.
+    - `stale` se il mirror è indietro rispetto alla landing: se la landing
+      quei giorni li ha, non è una pausa, è la nostra copia che non li ha
+      presi. Viene prima di tutto il resto.
+    - `no_delivery`: la coda manca, MA all'ultimo sync le campagne erano
+      tutte in pausa (`paused`), OPPURE la pipeline ha girato abbastanza
+      tardi da doverla aver portata (primo giorno mancante + tolleranza).
+      Allora lo zero è una MISURA, non un buco: la spesa del periodo è
+      completa. È il caso delle campagne Google in pausa dal 10/9/2026.
+    - `stale`: la coda manca, le campagne non risultano in pausa e la
+      pipeline non ha girato dopo. Qui il dato non è zero, è ignoto.
 
     La domanda che separa gli ultimi due non è "ci sono dati?" ma "la pipeline
-    ha girato?": senza questo discriminante una campagna in pausa sembra un
-    connettore rotto, e si spegne un CAC che era giusto. Il mirror indietro
-    viene prima del battito: se la landing quei giorni li ha, non è una pausa,
-    è la nostra copia che non li ha presi.
+    ha girato, o sappiamo che non aveva niente da portare?": senza questo
+    discriminante una campagna in pausa sembra un connettore rotto, e si
+    spegne un CAC che era giusto. Il battito da solo non basta, perché su un
+    canale in pausa si congela (vedi `_campaigns_paused`).
     """
     if not last_day or last_day < active_since:
         return 'off'
     if not missing:
         return 'covered'
-    if mirror_behind or sync_day is None:
+    if mirror_behind:
+        return 'stale'
+    if paused:
+        return 'no_delivery'
+    if sync_day is None:
         return 'stale'
     dovuto_arrivare = (date.fromisoformat(missing[0]) +
                        timedelta(days=GIORNI_TOLLERANZA_SPESA))
@@ -282,7 +322,9 @@ def spend_coverage(start, end, today=None):
         landing = _landing_probe(channel)
         sync_day = _last_sync_day(channel, landing)
         behind = _mirror_behind(last, landing['last_day'])
-        state = _channel_state(last, active_since, missing, sync_day, behind)
+        paused = _campaigns_paused(channel, last)
+        state = _channel_state(last, active_since, missing, sync_day, behind,
+                               paused)
         if state == 'stale':
             uncovered |= set(missing)
         channels.append({
@@ -290,6 +332,7 @@ def spend_coverage(start, end, today=None):
             'last_day': last, 'state': state, 'active': state != 'off',
             'last_sync': sync_day.isoformat() if sync_day else None,
             'landing_last_day': landing['last_day'], 'mirror_behind': behind,
+            'paused': paused,
             'days_with_data': sum(start.isoformat() <= day <= end.isoformat()
                                   for day in days),
             'missing_days': len(missing) if state != 'off' else 0,
@@ -305,7 +348,9 @@ def spend_coverage(start, end, today=None):
         if row['state'] == 'no_delivery':
             # Tono neutro: è un'informazione, non un avviso. Il numero è giusto.
             since = date.fromisoformat(row['last_day']) + timedelta(days=1)
-            notes.append(f"{label}: nessuna erogazione dal {_it_day(since.isoformat())}")
+            pausa = 'campagne in pausa, ' if row['paused'] else ''
+            notes.append(f"{label}: {pausa}nessuna erogazione dal "
+                         f"{_it_day(since.isoformat())}")
             continue
         notes.append(f"spesa {label} aggiornata al {_it_day(row['last_day'])}")
         if not row['uncovered_days']:
