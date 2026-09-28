@@ -808,3 +808,189 @@ def performance_metrics(source='wundt', start=None, end=None):
                                        for subject in first_purchase),
         },
     }
+
+
+# ---------------------------------------- lead mensili per la piattaforma
+# La tabella che la dashboard admin della piattaforma legge da JAMES al posto
+# della vecchia tabella Airtable alimentata da Make (`metrics_api`). Non sono
+# definizioni nuove: i lead sono i «lead entrati» di `performance_metrics`
+# (`is_funnel_lead`) e i convertiti le sue acquisizioni (`split_payers`),
+# contati per coorte, cioè nel mese in cui il lead è entrato.
+
+# Gli stati WUNDT che dicono che il lead ha avuto l'incontro conoscitivo:
+# prenotato, o presenziato, che prenotato lo è stato per forza.
+MEETING_STATUSES = ('booked_meeting', 'meeting_attended')
+
+# Etichette delle sorgenti per i lead senza campagna, copiate da
+# `_acquisition_label` in `views.data_home`: la home di JAMES e la piattaforma
+# devono chiamare nello stesso modo lo stesso lead. Se cambiano di là, cambiano
+# anche qui.
+SOURCE_LABELS = {
+    'meta': 'Meta', 'facebook-leads': 'Meta',
+    'google': 'Google', 'google_ads': 'Google',
+    'whatsapp': 'WhatsApp', 'website': 'Sito',
+    'piattaforma': 'Piattaforma', 'import_airtable': 'Airtable / storico',
+}
+
+
+def source_label(dimensions):
+    """L'etichetta della sorgente di un lead che non porta una campagna."""
+    source = (dimensions.get('marketing.attribution_source') or
+              dimensions.get('wundt.lead_source') or '').lower()
+    if source == 'whatsapp':
+        return 'WhatsApp diretto'
+    return (SOURCE_LABELS.get(source, source.replace('_', ' ').title()) or
+            'Non attribuito')
+
+
+def _campaign_names():
+    """{id campagna: nome} dal mirror Airbyte di Meta e Google.
+
+    Da Make l'evento del lead porta il nome della campagna e non l'id; dove
+    l'id c'è, il nome giusto è quello della piattaforma pubblicitaria. Una
+    campagna rinominata prende il nome del suo ultimo giorno con dato.
+    """
+    names, last_day = {}, {}
+    for channel in SPEND_CHANNELS:
+        rows = AirbyteRecord.objects.filter(
+            stream=channel['stream']).values_list('data', flat=True)
+        for data in rows.iterator():
+            campaign_id = str(data.get('campaign_id') or '').strip()
+            name = str(data.get('campaign_name') or '').strip()
+            day = str(data.get(channel['date_field']) or '')
+            if campaign_id and name and day >= last_day.get(campaign_id, ''):
+                names[campaign_id], last_day[campaign_id] = name, day
+    return names
+
+
+def _monthly_definitions(lead_type_available, call_available):
+    """Le definizioni scritte nella risposta: una frase ciascuna, costruite
+    dalle stesse costanti che decidono i numeri."""
+    migrations = f"i lead nati da una migrazione (fonti {', '.join(IMPORT_SOURCES)})"
+    if lead_type_available:
+        excluded = (f"esclusi i tutor potenziali (wundt.lead_type "
+                    f"{', '.join(EXCLUDED_LEAD_TYPES)}) e {migrations}")
+    else:
+        excluded = (f"esclusi {migrations}: i tutor potenziali sono inclusi perché "
+                    "gli eventi non portano ancora la dimensione wundt.lead_type")
+    if call_available:
+        call = ("Lead della riga che in WUNDT hanno avuto almeno un cambio di stato "
+                "da o verso «Primo incontro prenotato» o «Primo incontro presenziato» "
+                f"({', '.join(MEETING_STATUSES)}), in qualunque momento fino "
+                "a oggi; la sola prenotazione della call su Calendly non basta, "
+                "perché WUNDT la registra come nota senza cambiare lo stato.")
+    else:
+        call = ("Non disponibile: JAMES non ha ricevuto da WUNDT nessun evento di "
+                "cambio stato dei lead (lead_status_changed), e senza quello non sa "
+                "chi ha avuto una call o un incontro conoscitivo prenotato.")
+    return {
+        'lead': ("Lead di WUNDT (un identificativo pseudonimo ciascuno) il cui "
+                 "primo evento lead_created cade nel mese, ora di Roma, "
+                 f"{excluded}."),
+        'fonte': ("Nome della campagna per i lead attribuiti a una campagna (dal "
+                  "mirror Airbyte di Meta e Google quando l'evento porta l'id, "
+                  "altrimenti marketing.utm_campaign o l'id stesso), per gli altri "
+                  "l'etichetta della sorgente (marketing.attribution_source o "
+                  "wundt.lead_source, «WhatsApp diretto» per chi ha scritto su "
+                  "WhatsApp senza campagna, «Non attribuito» se mancano entrambe)."),
+        'call': call,
+        'convertiti': ("Lead della riga diventati clienti paganti dopo l'ingresso, "
+                       "con la definizione delle «Acquisizioni (lead preesistenti)» "
+                       "di JAMES (primo pagamento in un giorno successivo a quello di "
+                       "creazione del lead, ora di Roma, e fonte del lead diversa da "
+                       f"{', '.join(NON_FUNNEL_SOURCES)}), contati nel mese di "
+                       "ingresso qualunque sia il mese del pagamento, fino al "
+                       "momento in cui la risposta è generata."),
+    }
+
+
+def monthly_leads(first_month, last_month, source='wundt'):
+    """Lead entrati per mese di ingresso e fonte, con le call e i convertiti
+    della stessa coorte. Mesi 'YYYY-MM', estremi compresi.
+
+    Una riga per (mese, fonte) con almeno un lead: i mesi vuoti non ci sono.
+    Call e conversioni stanno nel mese in cui il lead è ENTRATO, non in quello
+    in cui sono successe, e si contano fino a oggi: la riga di un mese non
+    dipende dall'intervallo chiesto, e un mese recente cresce man mano che i
+    suoi lead si convertono. Nessun identificativo esce da qui.
+    """
+    first_lead, lead_dims, campaign = {}, {}, {}
+    first_purchase, met = {}, set()
+    status_events = False
+    events = SubjectEvent.objects.filter(
+        source__slug=source,
+        event_type__in=('lead_created', 'lead_status_changed', 'purchase'),
+    ).order_by('occurred_at', 'pk')
+    for event in events.iterator():
+        subject, dims = event.external_subject_id, event.dimensions
+        if not subject:
+            continue
+        status_events |= event.event_type == 'lead_status_changed'
+        # "Da o verso": è quello che JAMES può fare al posto dello stato
+        # attuale, che WUNDT guarda e JAMES non riceve. Un lead migrato che
+        # è entrato nell'incontro senza che il passaggio fosse registrato lo
+        # dice quando ne esce.
+        if any(dims.get(field) in MEETING_STATUSES
+               for field in ('wundt.to_status', 'wundt.from_status')):
+            met.add(subject)
+        if event.event_type == 'lead_created':
+            first_lead[subject] = min(event.occurred_at,
+                                      first_lead.get(subject, event.occurred_at))
+            # Come in `performance_metrics`: fra due `lead_created` dello
+            # stesso soggetto per ogni campo vince il primo che lo porta, per
+            # la campagna l'ultimo che ne porta una.
+            fields = lead_dims.setdefault(subject, {})
+            for field in ('wundt.lead_source', 'wundt.lead_type',
+                          'marketing.attribution_source'):
+                if field not in fields and dims.get(field):
+                    fields[field] = dims[field]
+            pair = (str(dims.get('marketing.campaign_id') or '').strip(),
+                    str(dims.get('marketing.utm_campaign') or '').strip())
+            if any(pair):
+                campaign[subject] = pair
+        elif event.event_type == 'purchase':
+            first_purchase[subject] = min(
+                event.occurred_at, first_purchase.get(subject, event.occurred_at))
+
+    acquisitions, _excluded = split_payers(
+        first_lead, first_purchase,
+        {subject: lead_source_of(dims) for subject, dims in lead_dims.items()})
+    cohort = {}
+    for subject, when in first_lead.items():
+        month = _localday(when).isoformat()[:7]
+        if first_month <= month <= last_month and is_funnel_lead(lead_dims[subject]):
+            cohort[subject] = month
+    ids = {campaign[subject][0] for subject in cohort if subject in campaign} - {''}
+    names = _campaign_names() if ids else {}
+
+    rows = defaultdict(lambda: {'lead': 0, 'call': 0, 'convertiti': 0,
+                                'call_convertiti': 0})
+    for subject, month in cohort.items():
+        campaign_id, utm_campaign = campaign.get(subject, ('', ''))
+        if campaign_id or utm_campaign:
+            fonte = names.get(campaign_id) or utm_campaign or campaign_id
+        else:
+            fonte = source_label(lead_dims[subject])
+        called, converted = subject in met, subject in acquisitions
+        row = rows[(month, fonte)]
+        row['lead'] += 1
+        row['call'] += int(called)
+        row['convertiti'] += int(converted)
+        row['call_convertiti'] += int(called and converted)
+
+    def _call_or_none(values):
+        # Senza eventi di cambio stato "zero call" sarebbe un numero inventato.
+        if not status_events:
+            values['call'] = values['call_convertiti'] = None
+        return values
+
+    return {
+        'righe': [_call_or_none({'mese': month, 'fonte': fonte, **row})
+                  for (month, fonte), row in sorted(rows.items())],
+        'totali': _call_or_none({key: sum(row[key] for row in rows.values())
+                                 for key in ('lead', 'call', 'convertiti',
+                                             'call_convertiti')}),
+        'definizioni': _monthly_definitions(
+            any('wundt.lead_type' in dims for dims in lead_dims.values()),
+            status_events),
+    }

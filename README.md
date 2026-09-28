@@ -28,7 +28,12 @@ DB_NAME=james
 AIRBYTE_DB_NAME=airbyte_raw
 DB_USER=airbyte_writer
 DB_PASSWORD=...
+PLATFORM_METRICS_API_KEY=...
 ```
+
+## API per la piattaforma
+
+`GET /api/v1/metrics/lead-mensili/?da=YYYY-MM&a=YYYY-MM` con `Authorization: Bearer <PLATFORM_METRICS_API_KEY>`: lead entrati per mese di ingresso e fonte, con call e convertiti della stessa coorte, più totali e definizioni scritte nella risposta. Solo aggregati, nessun dato personale. Chiave assente o errata: 401 (anche quando `PLATFORM_METRICS_API_KEY` non è impostata); mesi non validi, `da` dopo `a` o più di 36 mesi: 400. Le regole sono quelle dei lead entrati e delle acquisizioni della dashboard (`dashboard/analytics.py`, `monthly_leads`).
 
 ## Import dati da Airbyte
 

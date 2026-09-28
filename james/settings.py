@@ -25,6 +25,10 @@ CSRF_TRUSTED_ORIGINS = [o.strip() for o in
 
 PED_SERVICE_TOKEN = os.environ.get('PED_SERVICE_TOKEN', '')
 
+# Chiave con cui la piattaforma legge /api/v1/metrics/ (dashboard/metrics_api.py).
+# Vuota = l'API risponde 401 a chiunque.
+PLATFORM_METRICS_API_KEY = os.environ.get('PLATFORM_METRICS_API_KEY', '').strip()
+
 
 # Application definition
 

@@ -1,10 +1,12 @@
 from django.urls import path
 
-from . import ingestion, ped_api, views
+from . import ingestion, metrics_api, ped_api, views
 
 app_name = 'dashboard'
 
 urlpatterns = [
+    path('api/v1/metrics/lead-mensili/', metrics_api.lead_mensili,
+         name='lead_mensili_api'),
     path('api/v1/editorial-calendar/', ped_api.editorial_calendar,
          name='editorial_calendar_api'),
     path('api/v1/editorial-calendar/<str:origin>/<str:ref>/',

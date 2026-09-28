@@ -747,3 +747,237 @@ class EditorialCalendarApiTests(TestCase):
     def test_token_is_required(self):
         response = self.client.get('/api/v1/editorial-calendar/')
         self.assertEqual(response.status_code, 401)
+
+
+@override_settings(PLATFORM_METRICS_API_KEY='chiave-di-prova')
+class LeadMensiliApiTests(TestCase):
+    """L'API che la piattaforma legge al posto della tabella Airtable di Make:
+    lead entrati per mese di ingresso e fonte, con call e convertiti della
+    stessa coorte, e le definizioni dentro la risposta."""
+
+    url = '/api/v1/metrics/lead-mensili/'
+
+    def setUp(self):
+        self.source = AnalyticsSource.objects.create(name='WUNDT', slug='wundt')
+        self.serial = 0
+
+    def event(self, subject, kind, when, dimensions=None, measures=None):
+        self.serial += 1
+        return SubjectEvent.objects.create(
+            source=self.source, event_id=f'wundt:test:{self.serial}',
+            event_type=kind, external_subject_id=subject,
+            occurred_at=parse_datetime(when), dimensions=dimensions or {},
+            measures=measures or {})
+
+    def lead(self, subject, when, lead_source='facebook-leads', lead_type='client',
+             **marketing):
+        dimensions = {'wundt.lead_source': lead_source}
+        if lead_type:
+            dimensions['wundt.lead_type'] = lead_type
+        dimensions.update({f'marketing.{key}': value
+                           for key, value in marketing.items()})
+        return self.event(subject, 'lead_created', when, dimensions)
+
+    def status(self, subject, when, to_status, from_status='new'):
+        return self.event(subject, 'lead_status_changed', when,
+                          {'wundt.from_status': from_status,
+                           'wundt.to_status': to_status})
+
+    def purchase(self, subject, when):
+        return self.event(subject, 'purchase', when,
+                          measures={'commerce.revenue_eur': '280'})
+
+    def get(self, da='2026-01', a='2026-12', key='chiave-di-prova'):
+        headers = {'HTTP_AUTHORIZATION': f'Bearer {key}'} if key is not None else {}
+        return self.client.get(self.url, {'da': da, 'a': a}, **headers)
+
+    def test_without_the_right_key_it_is_401(self):
+        self.assertEqual(self.get(key=None).status_code, 401)
+        self.assertEqual(self.get(key='sbagliata').status_code, 401)
+        # La chiave va dopo "Bearer ": da sola non basta.
+        naked = self.client.get(self.url, {'da': '2026-01', 'a': '2026-12'},
+                                HTTP_AUTHORIZATION='chiave-di-prova')
+        self.assertEqual(naked.status_code, 401)
+        # Un header con caratteri non ASCII è una chiave errata, non un 500.
+        self.assertEqual(self.get(key='chiave-di-pròva').status_code, 401)
+        self.assertEqual(self.get().status_code, 200)
+        post = self.client.post(self.url, HTTP_AUTHORIZATION='Bearer chiave-di-prova')
+        self.assertEqual(post.status_code, 405)
+
+    @override_settings(PLATFORM_METRICS_API_KEY='')
+    def test_with_no_key_configured_everyone_gets_401(self):
+        self.assertEqual(self.get(key='').status_code, 401)
+        self.assertEqual(self.get(key='qualsiasi').status_code, 401)
+
+    def test_invalid_months_are_400(self):
+        for da, a in [('', ''), ('2026-01', ''), ('2026-7', '2026-08'),
+                      ('2026-13', '2026-12'), ('2026-00', '2026-01'),
+                      ('26-07', '2026-08'), ('2026-07-01', '2026-08'),
+                      ('2026-07\n', '2026-08'), ('٢٠٢٦-07', '2026-08'),
+                      ('2026-08', '2026-07'),     # da dopo a
+                      ('2024-01', '2027-01')]:    # 37 mesi
+            with self.subTest(da=da, a=a):
+                response = self.get(da=da, a=a)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('error', response.json())
+        missing = self.client.get(self.url, HTTP_AUTHORIZATION='Bearer chiave-di-prova')
+        self.assertEqual(missing.status_code, 400)
+        # 36 mesi sono ancora ammessi, e un mese solo pure.
+        self.assertEqual(self.get(da='2024-01', a='2026-12').status_code, 200)
+        self.assertEqual(self.get(da='2026-07', a='2026-07').status_code, 200)
+        # Senza chiave i parametri non si guardano nemmeno.
+        self.assertEqual(self.get(da='x', a='y', key=None).status_code, 401)
+
+    def test_rows_and_totals_by_month_and_source(self):
+        video = 'MNT_RIP_LEADS_JUL2026 - Video'
+        # Luglio, Video: uno prenota l'incontro e paga, uno no.
+        self.lead('psn-a', '2026-07-03T10:00:00Z', utm_campaign=video)
+        self.status('psn-a', '2026-07-05T10:00:00Z', 'booked_meeting')
+        self.purchase('psn-a', '2026-07-10T10:00:00Z')
+        self.lead('psn-b', '2026-07-04T10:00:00Z', utm_campaign=video)
+        # Luglio, WhatsApp senza campagna.
+        self.lead('psn-c', '2026-07-20T10:00:00Z', lead_source='whatsapp')
+        # Agosto, DSA: uno ha presenziato all'incontro e non paga; l'altro
+        # (lead migrato) l'ingresso nell'incontro non l'ha registrato, ma ne
+        # esce diventando cliente, e paga.
+        self.lead('psn-d', '2026-08-02T10:00:00Z', utm_campaign='MNT_DSA - Video')
+        self.status('psn-d', '2026-08-06T10:00:00Z', 'meeting_attended',
+                    from_status='booked_meeting')
+        self.lead('psn-e', '2026-08-03T10:00:00Z', utm_campaign='MNT_DSA - Video')
+        self.status('psn-e', '2026-08-08T10:00:00Z', 'client_acquired',
+                    from_status='booked_meeting')
+        self.purchase('psn-e', '2026-08-09T10:00:00Z')
+        # Giugno e settembre non hanno lead: niente righe.
+
+        response = self.get(da='2026-06', a='2026-09')
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(set(body), {'generato_il', 'da', 'a', 'righe', 'totali',
+                                     'definizioni'})
+        self.assertEqual((body['da'], body['a']), ('2026-06', '2026-09'))
+        self.assertEqual(body['righe'], [
+            {'mese': '2026-07', 'fonte': video, 'lead': 2, 'call': 1,
+             'convertiti': 1, 'call_convertiti': 1},
+            {'mese': '2026-07', 'fonte': 'WhatsApp diretto', 'lead': 1, 'call': 0,
+             'convertiti': 0, 'call_convertiti': 0},
+            {'mese': '2026-08', 'fonte': 'MNT_DSA - Video', 'lead': 2, 'call': 2,
+             'convertiti': 1, 'call_convertiti': 1},
+        ])
+        self.assertEqual(body['totali'], {'lead': 5, 'call': 3, 'convertiti': 2,
+                                          'call_convertiti': 2})
+        self.assertEqual(set(body['definizioni']),
+                         {'lead', 'fonte', 'call', 'convertiti'})
+        self.assertIn('potential_tutor', body['definizioni']['lead'])
+        self.assertRegex(body['generato_il'],
+                         r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$')
+        # Niente identificativi nella risposta.
+        self.assertNotIn('psn-', response.content.decode())
+
+    def test_exclusions_follow_leads_entered_and_acquisitions(self):
+        # Fuori dai lead: il tutor potenziale e le migrazioni, anche se pagano.
+        self.lead('psn-tutor', '2026-07-01T10:00:00Z', lead_type='potential_tutor')
+        self.lead('psn-airtable', '2026-07-01T10:00:00Z', lead_source='import_airtable')
+        self.lead('psn-piattaforma', '2026-07-01T10:00:00Z', lead_source='piattaforma')
+        self.purchase('psn-piattaforma', '2026-07-05T10:00:00Z')
+        # Dentro ma non convertito: paga lo stesso giorno in cui entra.
+        self.lead('psn-stesso-giorno', '2026-07-02T08:00:00Z')
+        self.purchase('psn-stesso-giorno', '2026-07-02T18:00:00Z')
+        # Dentro e convertito: paga il giorno dopo.
+        self.lead('psn-giorno-dopo', '2026-07-02T08:00:00Z')
+        self.purchase('psn-giorno-dopo', '2026-07-03T09:00:00Z')
+        # Pagante senza lead_created: non è un lead e non è una conversione.
+        self.purchase('psn-senza-lead', '2026-07-03T09:00:00Z')
+
+        body = self.get(da='2026-07', a='2026-07').json()
+
+        self.assertEqual(body['righe'], [
+            {'mese': '2026-07', 'fonte': 'Meta', 'lead': 2, 'call': None,
+             'convertiti': 1, 'call_convertiti': None}])
+
+    def test_calls_and_conversions_stay_in_the_month_the_lead_entered(self):
+        # Entra il 1° luglio alle 00:30 di Roma (30 giugno in UTC), prenota ad
+        # agosto, paga a settembre: tutto sta nella riga di luglio.
+        self.lead('psn-a', '2026-06-30T22:30:00Z', utm_campaign='Video')
+        self.status('psn-a', '2026-08-10T10:00:00Z', 'booked_meeting')
+        self.purchase('psn-a', '2026-09-15T10:00:00Z')
+        july = {'mese': '2026-07', 'fonte': 'Video', 'lead': 1, 'call': 1,
+                'convertiti': 1, 'call_convertiti': 1}
+
+        self.assertEqual(self.get(da='2026-06', a='2026-09').json()['righe'], [july])
+        # La riga di un mese non dipende dall'intervallo chiesto...
+        self.assertEqual(self.get(da='2026-07', a='2026-07').json()['righe'], [july])
+        # ...e i mesi della prenotazione e del pagamento non hanno righe.
+        september = self.get(da='2026-08', a='2026-09').json()
+        self.assertEqual(september['righe'], [])
+        self.assertEqual(september['totali'], {'lead': 0, 'call': 0, 'convertiti': 0,
+                                               'call_convertiti': 0})
+        self.assertEqual(self.get(da='2026-06', a='2026-06').json()['righe'], [])
+
+    def test_without_status_events_call_is_null_and_says_why(self):
+        self.lead('psn-a', '2026-07-03T10:00:00Z', utm_campaign='Video')
+        self.purchase('psn-a', '2026-07-10T10:00:00Z')
+
+        body = self.get(da='2026-07', a='2026-07').json()
+
+        self.assertEqual(body['righe'], [
+            {'mese': '2026-07', 'fonte': 'Video', 'lead': 1, 'call': None,
+             'convertiti': 1, 'call_convertiti': None}])
+        self.assertEqual(body['totali'], {'lead': 1, 'call': None, 'convertiti': 1,
+                                          'call_convertiti': None})
+        self.assertIn('Non disponibile', body['definizioni']['call'])
+        self.assertIn('lead_status_changed', body['definizioni']['call'])
+
+        # Appena WUNDT manda un cambio di stato qualsiasi, zero è un numero vero.
+        self.status('psn-a', '2026-07-04T10:00:00Z', 'contacted_whatsapp')
+        body = self.get(da='2026-07', a='2026-07').json()
+        self.assertEqual(body['totali']['call'], 0)
+        self.assertEqual(body['totali']['call_convertiti'], 0)
+        self.assertNotIn('Non disponibile', body['definizioni']['call'])
+
+    def test_source_is_the_campaign_name_or_the_source_label(self):
+        # L'id Meta si traduce col nome dell'ultimo giorno nel mirror.
+        AirbyteRecord.objects.create(
+            stream='fb_ads_insights', ab_id='fb-1',
+            data={'campaign_id': '1201', 'campaign_name': 'Nome vecchio',
+                  'date_start': '2026-07-01'})
+        AirbyteRecord.objects.create(
+            stream='fb_ads_insights', ab_id='fb-2',
+            data={'campaign_id': '1201', 'campaign_name': 'MNT_RIP_LEADS_JUL2026 - Video',
+                  'date_start': '2026-07-10'})
+        # Google porta l'id come numero.
+        AirbyteRecord.objects.create(
+            stream='gads_campaign', ab_id='gads-1',
+            data={'campaign_id': 987, 'campaign_name': 'Search brand',
+                  'segments_date': '2026-07-01'})
+        self.lead('psn-id-meta', '2026-07-01T10:00:00Z', campaign_id='1201',
+                  utm_campaign='rip_luglio')
+        self.lead('psn-id-google', '2026-07-01T10:00:00Z', lead_source='website',
+                  campaign_id='987')
+        self.lead('psn-utm', '2026-07-01T10:00:00Z', utm_campaign='MNT_DSA - Video')
+        # Il doppione che WUNDT manda per ogni lead (l'azione "creato"): un
+        # lead solo, con la campagna dell'evento che la porta.
+        self.event('psn-utm', 'lead_created', '2026-07-01T09:59:00Z',
+                   {'wundt.lead_source': 'facebook-leads',
+                    'wundt.action_type': 'created'})
+        self.lead('psn-id-ignoto', '2026-07-01T10:00:00Z', campaign_id='555')
+        self.lead('psn-ctwa', '2026-07-01T10:00:00Z', lead_source='whatsapp',
+                  attribution_source='meta')
+        self.lead('psn-whatsapp', '2026-07-01T10:00:00Z', lead_source='whatsapp')
+        self.lead('psn-calendly', '2026-07-01T10:00:00Z', lead_source='calendly')
+        self.lead('psn-nessuna', '2026-07-01T10:00:00Z', lead_source='')
+
+        rows = self.get(da='2026-07', a='2026-07').json()['righe']
+
+        self.assertEqual({row['fonte']: row['lead'] for row in rows}, {
+            'MNT_RIP_LEADS_JUL2026 - Video': 1, 'Search brand': 1,
+            'MNT_DSA - Video': 1, '555': 1, 'Meta': 1, 'WhatsApp diretto': 1,
+            'Calendly': 1, 'Non attribuito': 1})
+
+    def test_without_lead_type_the_definition_says_tutors_are_included(self):
+        self.lead('psn-a', '2026-07-01T10:00:00Z', lead_type=None)
+
+        body = self.get(da='2026-07', a='2026-07').json()
+
+        self.assertEqual(body['totali']['lead'], 1)
+        self.assertIn('tutor potenziali sono inclusi', body['definizioni']['lead'])
