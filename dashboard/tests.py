@@ -380,6 +380,95 @@ class WundtDefinitionsTests(TestCase):
         self.assertIn('wundt.lead_type', result['definitions']['lead_type_note'])
 
 
+class CallEIncontroTests(TestCase):
+    """La call con la segreteria e l'incontro col tutor sono due passi del
+    funnel, e le correzioni di WUNDT sul pregresso arrivano per id."""
+
+    def setUp(self):
+        self.source = AnalyticsSource.objects.create(
+            name='WUNDT', slug='wundt', identity_mode='pseudonymous_events')
+        self.headers = {
+            'HTTP_X_SOURCE_SLUG': 'wundt',
+            'HTTP_AUTHORIZATION': f'Bearer {self.source.issue_api_key()}',
+        }
+        self.fields = [
+            {'namespace': 'wundt', 'name': name, 'data_type': 'string',
+             'role': 'dimension', 'sensitivity': 'internal', 'aggregation': 'none'}
+            for name in ('lead_source', 'lead_type', 'action_type',
+                         'from_status', 'to_status')]
+
+    def send(self, *events):
+        response = self.client.post(
+            '/api/v1/ingest/events/', content_type='application/json',
+            data=json.dumps({'fields': self.fields, 'events': [
+                {'schema_version': 1, 'source_system': 'wundt', **event}
+                for event in events]}),
+            **self.headers)
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def lead(self, subject, day='2026-10-01'):
+        return {'event_id': f'wundt:lead:{subject}:created', 'event_version': 1,
+                'external_subject_id': subject, 'event_type': 'lead_created',
+                'occurred_at': f'{day}T09:00:00Z',
+                'dimensions': {'wundt.lead_source': 'facebook-leads',
+                               'wundt.lead_type': 'client'}}
+
+    def status(self, subject, to_status, action=1, version=1, day='2026-10-02'):
+        return {'event_id': f'wundt:lead_action:{subject}:{action}',
+                'event_version': version, 'external_subject_id': subject,
+                'event_type': 'lead_status_changed',
+                'occurred_at': f'{day}T10:00:00Z',
+                'dimensions': {'wundt.action_type': 'status_change',
+                               'wundt.to_status': to_status}}
+
+    def funnel(self):
+        rows = performance_metrics(source='wundt', start='2026-10-01',
+                                   end='2026-10-05')['funnel']
+        return {row['label']: row['count'] for row in rows}
+
+    def test_eight_steps_with_the_call_before_the_tutor_meeting(self):
+        statuses = {'psn-2': 'contacted_whatsapp', 'psn-3': 'customer_contacted',
+                    'psn-4': 'call_booked', 'psn-5': 'call_attended',
+                    # Dritto all'incontro col tutor: conta anche per la call.
+                    'psn-6': 'booked_meeting', 'psn-7': 'meeting_attended',
+                    'psn-8': 'call_attended',
+                    # Uno stato che JAMES non conosce non fa cadere niente.
+                    'psn-9': 'fase_che_non_esiste'}
+        self.send(self.lead('psn-1'),
+                  *(self.lead(subject) for subject in statuses),
+                  *(self.status(subject, to) for subject, to in statuses.items()),
+                  {'event_id': 'wundt:payment:8', 'event_version': 1,
+                   'external_subject_id': 'psn-8', 'event_type': 'purchase',
+                   'occurred_at': '2026-10-03T12:00:00Z'})
+
+        self.assertEqual(list(self.funnel().items()), [
+            ('Lead entrati', 9), ('Contattati', 7), ('Hanno risposto', 6),
+            ('Call fissata', 5), ('Call fatta', 4),
+            ('Incontro col tutor fissato', 3), ('Incontro col tutor fatto', 2),
+            ('Clienti', 1)])
+
+    def test_a_correction_with_the_same_id_moves_the_lead_back_to_the_call(self):
+        # Il pregresso: una call Calendly che WUNDT aveva segnato come
+        # incontro prenotato.
+        self.send(self.lead('psn-1'), self.status('psn-1', 'booked_meeting'))
+        self.assertEqual(self.funnel()['Incontro col tutor fissato'], 1)
+
+        # WUNDT la riclassifica: stesso evento, versione dopo.
+        result = self.send(self.status('psn-1', 'call_booked', version=2))
+
+        self.assertEqual(result['updated'], 1)
+        self.assertEqual(SubjectEvent.objects.filter(
+            event_type='lead_status_changed').count(), 1)
+        funnel = self.funnel()
+        self.assertEqual(funnel['Call fissata'], 1)
+        self.assertEqual(funnel['Call fatta'], 0)
+        self.assertEqual(funnel['Incontro col tutor fissato'], 0)
+        # La versione vecchia che arriva in ritardo non torna indietro.
+        self.assertEqual(self.send(self.status('psn-1', 'booked_meeting'))['stale'], 1)
+        self.assertEqual(self.funnel()['Incontro col tutor fissato'], 0)
+
+
 class SpendCoverageTests(TestCase):
     """Il cancello della copertura: due giorni di tolleranza, il giorno in corso
     mai scoperto, e nessun numero quando la spesa di un canale è ferma."""
@@ -913,6 +1002,25 @@ class LeadMensiliApiTests(TestCase):
         self.assertEqual(september['totali'], {'lead': 0, 'call': 0, 'convertiti': 0,
                                                'call_convertiti': 0})
         self.assertEqual(self.get(da='2026-06', a='2026-06').json()['righe'], [])
+
+    def test_the_call_with_the_office_is_a_call_too(self):
+        # Dalla separazione in WUNDT la call con la segreteria non è più
+        # `booked_meeting`: per la piattaforma resta una call.
+        self.lead('psn-a', '2026-10-01T10:00:00Z', utm_campaign='Video')
+        self.status('psn-a', '2026-10-02T10:00:00Z', 'call_booked')
+        self.lead('psn-b', '2026-10-01T10:00:00Z', utm_campaign='Video')
+        self.status('psn-b', '2026-10-03T10:00:00Z', 'call_attended',
+                    from_status='call_booked')
+        self.lead('psn-c', '2026-10-01T10:00:00Z', utm_campaign='Video')
+        self.status('psn-c', '2026-10-02T10:00:00Z', 'contacted_whatsapp')
+
+        body = self.get(da='2026-10', a='2026-10').json()
+
+        self.assertEqual(body['righe'], [
+            {'mese': '2026-10', 'fonte': 'Video', 'lead': 3, 'call': 2,
+             'convertiti': 0, 'call_convertiti': 0}])
+        self.assertIn('call_booked', body['definizioni']['call'])
+        self.assertIn('meeting_attended', body['definizioni']['call'])
 
     def test_without_status_events_call_is_null_and_says_why(self):
         self.lead('psn-a', '2026-07-03T10:00:00Z', utm_campaign='Video')

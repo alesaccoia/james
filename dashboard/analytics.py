@@ -550,17 +550,25 @@ def commercial_metrics(source=None, start=None, end=None, dormant_days=60):
     }
 
 
+# La stessa scala del funnel di WUNDT. La call con la segreteria (prenotata su
+# Calendly) e l'incontro col tutor sono due passi diversi: `booked_meeting` e
+# `meeting_attended` vogliono dire solo l'incontro col tutor. Uno stato che qui
+# non c'è vale 0, come un lead appena entrato: non fa cadere niente.
 FUNNEL_STAGES = (
     (0, 'Lead entrati'), (1, 'Contattati'), (2, 'Hanno risposto'),
-    (3, 'Call fissata'), (4, 'Call presenziata'), (5, 'Clienti'),
+    (3, 'Call fissata'), (4, 'Call fatta'),
+    (5, 'Incontro col tutor fissato'), (6, 'Incontro col tutor fatto'),
+    (7, 'Clienti'),
 )
 STATUS_RANK = {
     'new': 0,
     'contacted_whatsapp': 1, 'contacted_whatsapp_no_answer': 1,
     'contacted_phone': 1, 'contacted_phone_no_answer': 1, 'dormant': 1,
     'customer_contacted': 2, 'contacted_phone_answered': 2,
-    'booked_meeting': 3, 'meeting_attended': 4, 'client_acquired': 5,
+    'call_booked': 3, 'call_attended': 4,
+    'booked_meeting': 5, 'meeting_attended': 6, 'client_acquired': 7,
 }
+CLIENT_RANK = STATUS_RANK['client_acquired']
 NON_CONTACT_ACTIONS = {
     'imported', 'automation_started', 'automation_stopped', 'email_event',
     'created', 'assigned', 'snoozed', 'lead_type_changed', 'status_change',
@@ -693,7 +701,7 @@ def performance_metrics(source='wundt', start=None, end=None):
     for rank, label in FUNNEL_STAGES:
         count = (len(cohort) if rank == 0 else sum(
             max(STATUS_RANK.get(latest_status.get(subject, 'new'), 0),
-                5 if subject in converted_cohort else 0) >= rank
+                CLIENT_RANK if subject in converted_cohort else 0) >= rank
             for subject in cohort))
         funnel.append({'label': label, 'count': count,
                        'rate_from_previous': round(100 * count / previous, 1)
@@ -817,9 +825,13 @@ def performance_metrics(source='wundt', start=None, end=None):
 # (`is_funnel_lead`) e i convertiti le sue acquisizioni (`split_payers`),
 # contati per coorte, cioè nel mese in cui il lead è entrato.
 
-# Gli stati WUNDT che dicono che il lead ha avuto l'incontro conoscitivo:
-# prenotato, o presenziato, che prenotato lo è stato per forza.
-MEETING_STATUSES = ('booked_meeting', 'meeting_attended')
+# Gli stati WUNDT che dicono che il lead ha avuto una call: con la segreteria
+# o l'incontro col tutor, prenotati o fatti (fatti vuol dire prenotati per
+# forza). Per la piattaforma «call» resta «ha avuto una call o un incontro»:
+# dalla separazione delle due fasi in WUNDT le call della segreteria sono
+# `call_*`, e senza di loro il numero crollerebbe.
+MEETING_STATUSES = ('call_booked', 'call_attended',
+                    'booked_meeting', 'meeting_attended')
 
 # Etichette delle sorgenti per i lead senza campagna, copiate da
 # `_acquisition_label` in `views.data_home`: la home di JAMES e la piattaforma
@@ -875,10 +887,9 @@ def _monthly_definitions(lead_type_available, call_available):
                     "gli eventi non portano ancora la dimensione wundt.lead_type")
     if call_available:
         call = ("Lead della riga che in WUNDT hanno avuto almeno un cambio di stato "
-                "da o verso «Primo incontro prenotato» o «Primo incontro presenziato» "
-                f"({', '.join(MEETING_STATUSES)}), in qualunque momento fino "
-                "a oggi; la sola prenotazione della call su Calendly non basta, "
-                "perché WUNDT la registra come nota senza cambiare lo stato.")
+                "da o verso la call con la segreteria o l'incontro col tutor, "
+                f"prenotati o fatti ({', '.join(MEETING_STATUSES)}), in "
+                "qualunque momento fino a oggi.")
     else:
         call = ("Non disponibile: JAMES non ha ricevuto da WUNDT nessun evento di "
                 "cambio stato dei lead (lead_status_changed), e senza quello non sa "
